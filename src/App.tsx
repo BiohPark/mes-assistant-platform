@@ -100,7 +100,9 @@ function Shell() {
   const { state, update, notify, toast, storageError } = useStore();
   const route = useRoute();
   const pageRoute = route.split("/").slice(0, 3).join("/");
-  useEffect(() => window.scrollTo(0, 0), [pageRoute]);
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pageRoute]);
   const [create, setCreate] = useState(false),
     [settings, setSettings] = useState(false),
     [agent, setAgent] = useState(false),
