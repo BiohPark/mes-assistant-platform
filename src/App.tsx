@@ -1,3 +1,7 @@
+import { SystemAssistant } from "./SystemAssistant";
+import { WorkflowBoard } from "./WorkflowBoard";
+import { matchesModule } from "./workflow";
+import { ConnectionSettings } from "./ConnectionSettings";
 import { Component, useEffect, useState, type ReactNode } from "react";
 import {
   Activity,
@@ -32,7 +36,13 @@ import {
   X,
 } from "lucide-react";
 import { Provider, useStore, useRoute, navigate } from "./store";
-import { addWork, currentStage, getProgress, workStatus, USERS } from "./domain";
+import {
+  addWork,
+  currentStage,
+  getProgress,
+  workStatus,
+  USERS,
+} from "./domain";
 import {
   Avatar,
   Badge,
@@ -60,12 +70,34 @@ class ErrorBoundary extends Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: 40, fontFamily: "sans-serif", maxWidth: 640, margin: "60px auto", background: "#fff", borderRadius: 12, boxShadow: "0 4px 20px rgba(0,0,0,0.08)" }}>
-          <h2 style={{ color: "#d32f2f", marginTop: 0 }}>화면을 불러오는 중 오류가 발생했습니다.</h2>
-          <p style={{ color: "#555", lineHeight: 1.6 }}>{this.state.error?.message || "알 수 없는 오류가 발생했습니다."}</p>
+        <div
+          style={{
+            padding: 40,
+            fontFamily: "sans-serif",
+            maxWidth: 640,
+            margin: "60px auto",
+            background: "#fff",
+            borderRadius: 12,
+            boxShadow: "0 4px 20px rgba(0,0,0,0.08)",
+          }}
+        >
+          <h2 style={{ color: "#d32f2f", marginTop: 0 }}>
+            화면을 불러오는 중 오류가 발생했습니다.
+          </h2>
+          <p style={{ color: "#555", lineHeight: 1.6 }}>
+            {this.state.error?.message || "알 수 없는 오류가 발생했습니다."}
+          </p>
           <div style={{ marginTop: 24, display: "flex", gap: 12 }}>
             <button
-              style={{ padding: "10px 18px", cursor: "pointer", background: "#176b56", color: "#fff", border: "none", borderRadius: 8, fontWeight: 600 }}
+              style={{
+                padding: "10px 18px",
+                cursor: "pointer",
+                background: "#176b56",
+                color: "#fff",
+                border: "none",
+                borderRadius: 8,
+                fontWeight: 600,
+              }}
               onClick={() => {
                 localStorage.clear();
                 window.location.reload();
@@ -74,7 +106,15 @@ class ErrorBoundary extends Component<
               데이터 초기화 후 다시 시작
             </button>
             <button
-              style={{ padding: "10px 18px", cursor: "pointer", background: "#f0f4f2", color: "#283d38", border: "1px solid #d0dbd5", borderRadius: 8, fontWeight: 500 }}
+              style={{
+                padding: "10px 18px",
+                cursor: "pointer",
+                background: "#f0f4f2",
+                color: "#283d38",
+                border: "1px solid #d0dbd5",
+                borderRadius: 8,
+                fontWeight: 500,
+              }}
               onClick={() => window.location.reload()}
             >
               새로고침
@@ -336,8 +376,9 @@ function Shell() {
             ))}
           </div>
           <div className="info-box">
-            대화는 샘플 응답입니다. 파일은 이 브라우저에 저장되며, 실제 사내
-            LLM·GMP 승인·자동 배포는 연결되어 있지 않습니다.
+            기본은 샘플 응답입니다. 설정에서 사내 API를 연결할 수 있습니다.
+            파일과 대화는 이 브라우저에 저장되며, 다중 PC 동기화·GMP 승인·자동
+            배포는 구현 범위에 포함되지 않습니다.
           </div>
         </Modal>
       )}
@@ -354,13 +395,15 @@ function Dashboard({
   const { state } = useStore();
   const [query, setQuery] = useState(""),
     [tab, setTab] = useState("전체 업무"),
-    [filter, setFilter] = useState("전체 단계"),
-    [view, setView] = useState<"list" | "board">("list"),
+    [view, setView] = useState<"list" | "board">(compact ? "board" : "list"),
+    [moduleFilter, setModuleFilter] = useState(""),
+    [scope, setScope] = useState<"current" | "includes">("current"),
+    [templateFilter, setTemplateFilter] = useState(""),
     [filters, setFilters] = useState(false),
     [owner, setOwner] = useState("전체 담당자");
   const done = state.works.filter((w) => workStatus(w) === "완료").length,
     review = state.works.filter((w) => workStatus(w) === "검토 필요").length;
-  const works = state.works.filter(
+  const baseWorks = state.works.filter(
     (w) =>
       (!query ||
         `${w.title} ${w.id} ${w.externalId}`
@@ -369,9 +412,10 @@ function Dashboard({
       (tab === "전체 업무" ||
         (tab === "내 업무" && w.owner === state.profile) ||
         tab === workStatus(w)) &&
-      (filter === "전체 단계" || currentStage(w).short === filter) &&
-      (owner === "전체 담당자" || w.owner === owner),
+      (owner === "전체 담당자" || w.owner === owner) &&
+      (!templateFilter || w.template === templateFilter),
   );
+  const works = baseWorks.filter((w) => matchesModule(w, moduleFilter, scope));
   const resume =
     state.works.find(
       (w) => w.owner === state.profile && getProgress(w) < 100,
@@ -581,14 +625,14 @@ function Dashboard({
                 className={view === "list" ? "selected" : ""}
                 onClick={() => setView("list")}
               >
-                <List size={17} />
+                <List size={17} /> 목록
               </button>
               <button
                 aria-label="보드 보기"
                 className={view === "board" ? "selected" : ""}
                 onClick={() => setView("board")}
               >
-                <LayoutGrid size={16} />
+                <LayoutGrid size={16} /> 워크플로우
               </button>
             </div>
           </div>
@@ -637,31 +681,83 @@ function Dashboard({
             >
               <SlidersHorizontal size={15} />
               필터
-              {filter !== "전체 단계" || owner !== "전체 담당자" ? (
+              {moduleFilter || templateFilter || owner !== "전체 담당자" ? (
                 <span className="filter-dot" />
               ) : null}
             </button>
           </div>
         </div>
+        <div className="module-filter-panel">
+          <div className="module-filter-top">
+            <span className="eyebrow">TASK MODULES</span>
+            <span>업무 → Task 조합 → 실행과 체크리스트</span>
+            <select
+              aria-label="워크플로우 템플릿 필터"
+              value={templateFilter}
+              onChange={(e) => setTemplateFilter(e.target.value)}
+            >
+              <option value="">모든 템플릿</option>
+              {[...new Set(state.works.map((w) => w.template))].map((t) => (
+                <option key={t}>{t}</option>
+              ))}
+            </select>
+            <select
+              aria-label="Task 필터 범위"
+              value={scope}
+              onChange={(e) => setScope(e.target.value as typeof scope)}
+            >
+              <option value="current">현재 이 Task인 업무</option>
+              <option value="includes">이 Task를 포함한 업무</option>
+            </select>
+          </div>
+          <div className="module-filter-chips">
+            <button
+              aria-pressed={!moduleFilter}
+              className={!moduleFilter ? "active" : ""}
+              onClick={() => setModuleFilter("")}
+            >
+              전체 흐름 <b>{baseWorks.length}</b>
+            </button>
+            {(state.modules || []).map((m) => (
+              <button
+                key={m.id}
+                aria-pressed={moduleFilter === m.id}
+                className={moduleFilter === m.id ? "active" : ""}
+                onClick={() =>
+                  setModuleFilter(moduleFilter === m.id ? "" : m.id)
+                }
+              >
+                <span>{m.short}</span>
+                {m.name}
+                <b>
+                  {
+                    baseWorks.filter((w) => matchesModule(w, m.id, scope))
+                      .length
+                  }
+                </b>
+              </button>
+            ))}
+            <button
+              className={moduleFilter === "completed" ? "active" : ""}
+              onClick={() => {
+                setScope("current");
+                setModuleFilter(
+                  moduleFilter === "completed" ? "" : "completed",
+                );
+              }}
+            >
+              완료
+            </button>
+          </div>
+          <p>
+            {scope === "current"
+              ? "현재 진행 위치를 기준으로 업무를 모았습니다."
+              : "선택한 Task를 포함하는 업무입니다. 카드는 현재 진행 위치에 표시됩니다."}{" "}
+            · {works.length}개 업무
+          </p>
+        </div>
         {filters && (
           <div className="filter-row">
-            <label>
-              현재 단계
-              <select
-                aria-label="현재 단계 필터"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-              >
-                {[
-                  "전체 단계",
-                  ...new Set(
-                    state.works.flatMap((w) => w.stages.map((s) => s.short)),
-                  ),
-                ].map((t) => (
-                  <option key={t}>{t}</option>
-                ))}
-              </select>
-            </label>
             <label>
               담당자
               <select
@@ -680,7 +776,8 @@ function Dashboard({
             <button
               className="text-link"
               onClick={() => {
-                setFilter("전체 단계");
+                setModuleFilter("");
+                setTemplateFilter("");
                 setOwner("전체 담당자");
                 setQuery("");
               }}
@@ -797,41 +894,14 @@ function Dashboard({
             </table>
           </div>
         ) : (
-          <div className="kanban">
-            {["진행 중", "검토 필요", "완료", "대기"].map((status) => (
-              <div className="kanban-column" key={status}>
-                <h4>
-                  <span
-                    className={`column-dot ${status === "검토 필요" ? "amber" : ""}`}
-                  />
-                  {status}
-                  <span>
-                    {works.filter((w) => workStatus(w) === status).length}
-                  </span>
-                </h4>
-                {works
-                  .filter((w) => workStatus(w) === status)
-                  .map((w) => (
-                    <button
-                      className="kanban-card"
-                      key={w.id}
-                      onClick={() => open(w.id)}
-                    >
-                      <small>{w.id}</small>
-                      <h3>{w.title}</h3>
-                      <span className="stage-pill">
-                        {currentStage(w).short}
-                      </span>
-                      <div className="kanban-bottom">
-                        <Avatar name={w.owner} small />
-                        <span>{formatDate(w.due)}</span>
-                        <span>{getProgress(w)}%</span>
-                      </div>
-                    </button>
-                  ))}
-              </div>
-            ))}
-          </div>
+          <WorkflowBoard
+            works={works}
+            selected={moduleFilter}
+            onSelect={(id) => {
+              setModuleFilter(id);
+              setScope("current");
+            }}
+          />
         )}
         <div className="table-bottom">
           <span>총 {works.length}개 업무</span>
@@ -935,10 +1005,7 @@ function NewWork({ onClose }: { onClose: () => void }) {
         <div className="form-grid">
           <label className="form-label">
             담당자
-            <select
-              value={owner}
-              onChange={(e) => setOwner(e.target.value)}
-            >
+            <select value={owner} onChange={(e) => setOwner(e.target.value)}>
               {USERS.map((u) => (
                 <option key={u} value={u}>
                   {u}
@@ -989,6 +1056,9 @@ function Settings({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState(state.profile),
     [url, setUrl] = useState(state.externalUrl),
     [error, setError] = useState("");
+  const [connectionOpen, setConnectionOpen] = useState(false);
+  if (connectionOpen)
+    return <ConnectionSettings onClose={() => setConnectionOpen(false)} />;
   return (
     <Modal
       title="워크스페이스 설정"
@@ -1022,14 +1092,25 @@ function Settings({ onClose }: { onClose: () => void }) {
       >
         <label className="form-label">
           표시 이름 (담당자 전환)
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "8px 0" }}>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "6px",
+              margin: "8px 0",
+            }}
+          >
             {USERS.map((u) => (
               <button
                 key={u}
                 type="button"
                 className={`button ${name === u ? "primary" : ""}`}
                 onClick={() => setName(u)}
-                style={{ padding: "4px 10px", fontSize: "12px", height: "auto" }}
+                style={{
+                  padding: "4px 10px",
+                  fontSize: "12px",
+                  height: "auto",
+                }}
               >
                 {u}
               </button>
@@ -1053,22 +1134,44 @@ function Settings({ onClose }: { onClose: () => void }) {
         {error && <p className="form-error">{error}</p>}
         <div className="settings-section">
           <span className="eyebrow">ASSISTANT CONNECTION</span>
-          <h3>OpenWebUI · GLM-5.2</h3>
-          <Badge tone="neutral">샘플 응답 모드</Badge>
-          <p>
-            기존 assistant의 대화 인터페이스를 유지하는 어댑터 구조입니다. 실제
-            연결 시 사내 인증, 파일 업로드, 세션 매핑을 서버에서 구성합니다.
-          </p>
-          <p>데모에는 API 키나 사내 연결 정보를 입력하지 않습니다.</p>
+          <h3>사내 API · 모델 설정</h3>
+          <Badge tone="neutral">
+            {state.connection?.mode === "api"
+              ? "사내 API 모드"
+              : "샘플 응답 모드"}
+          </Badge>
+          <p>시스템 기본 모델 → Task 기본 모델 → 대화별 모델을 설정합니다.</p>
+          <button
+            type="button"
+            className="button"
+            onClick={() => setConnectionOpen(true)}
+          >
+            API 연결 및 모델 관리
+          </button>
         </div>
-        <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: "12px", color: "var(--muted)" }}>초기 데이터로 되돌리려면:</span>
+        <div
+          style={{
+            marginTop: "16px",
+            paddingTop: "14px",
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <span style={{ fontSize: "12px", color: "var(--muted)" }}>
+            초기 데이터로 되돌리려면:
+          </span>
           <button
             type="button"
             className="button"
             style={{ color: "#d32f2f", borderColor: "#fca5a5" }}
             onClick={() => {
-              if (window.confirm("초기 샘플 데이터로 복원하시겠습니까? (현재 변경 내용이 초기화됩니다)")) {
+              if (
+                window.confirm(
+                  "초기 샘플 데이터로 복원하시겠습니까? (현재 변경 내용이 초기화됩니다)",
+                )
+              ) {
                 resetData();
                 onClose();
               }
@@ -1084,114 +1187,6 @@ function Settings({ onClose }: { onClose: () => void }) {
           <button className="button primary">저장하기</button>
         </div>
       </form>
-    </Modal>
-  );
-}
-function SystemAssistant({ onClose }: { onClose: () => void }) {
-  const { state, update, notify } = useStore();
-  const [prompt, setPrompt] = useState(""),
-    [proposal, setProposal] = useState<{
-      title: string;
-      template: string;
-    } | null>(null);
-  return (
-    <Modal
-      title="시스템 assistant"
-      subtitle="업무의 시작을 함께 설계합니다 · 샘플 제안"
-      onClose={onClose}
-    >
-      <div className="system-assistant-intro">
-        <AssistantMark />
-        <h3>어떤 업무를 시작하시나요?</h3>
-        <p>
-          해야 할 일을 설명해 주세요.
-          <br />
-          워크플로우를 제안하고 업무 생성을 도와드릴게요.
-        </p>
-      </div>
-      <div className="suggestion-chips">
-        {[
-          "설비 변경 관리 업무를 만들고 싶어요",
-          "테스트 검증 업무를 시작할게요",
-        ].map((t) => (
-          <button key={t} onClick={() => setPrompt(t)}>
-            {t}
-            <ArrowUpRight size={13} />
-          </button>
-        ))}
-      </div>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!prompt.trim()) return;
-          setProposal({
-            title: prompt.replace(/(를 만들고 싶어요|를 시작할게요)$/, ""),
-            template: /테스트|검증/.test(prompt)
-              ? "validation"
-              : /변경/.test(prompt)
-                ? "et-change"
-                : "et-standard",
-          });
-        }}
-      >
-        <div className="agent-input">
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="예: 신규 설비의 상태 전이 기능을 개발하려고 해요"
-            rows={3}
-          />
-          <button className="button primary" disabled={!prompt.trim()}>
-            <Sparkles size={15} />
-            흐름 제안받기
-          </button>
-        </div>
-      </form>
-      {proposal && (
-        <div className="proposal-card">
-          <div className="eyebrow">WORKFLOW PROPOSAL</div>
-          <h3>{proposal.title}</h3>
-          <p>
-            {
-              state.templates.find((t) => t.id === proposal.template)
-                ?.description
-            }
-          </p>
-          <div className="template-preview">
-            {state.templates
-              .find((t) => t.id === proposal.template)
-              ?.stages.map((s, i) => (
-                <span key={i} className={s.mode === "manual" ? "manual" : ""}>
-                  {s.short}
-                  <ChevronRight size={12} />
-                </span>
-              ))}
-          </div>
-          <p className="muted">
-            키워드 기반 데모 제안입니다. 생성 후 단계와 담당 방식을 편집할 수
-            있습니다.
-          </p>
-          <button
-            className="button primary"
-            onClick={() => {
-              const next = addWork(
-                state,
-                proposal.title,
-                proposal.template,
-                state.profile,
-                "2026-09-30",
-                "",
-              );
-              update(() => next);
-              onClose();
-              navigate("/work/" + next.works[0].id);
-              notify("제안한 워크플로우로 업무를 생성했습니다.");
-            }}
-          >
-            이 흐름으로 업무 만들기 <ArrowRight size={16} />
-          </button>
-        </div>
-      )}
     </Modal>
   );
 }

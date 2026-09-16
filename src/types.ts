@@ -1,5 +1,30 @@
 export type StageStatus = "pending" | "active" | "done" | "skipped" | "review";
 export type Mode = "assistant" | "manual";
+export type ChatThread = {
+  id: string;
+  title: string;
+  createdAt: string;
+  model?: string;
+};
+export type Connection = {
+  mode: "demo" | "api";
+  baseUrl: string;
+  chatPath: string;
+  modelsPath: string;
+  models: string[];
+  defaultModel: string;
+  sendNames: boolean;
+};
+export type TaskModule = {
+  id: string;
+  name: string;
+  short: string;
+  description: string;
+  mode: Mode;
+  assistant: string;
+  defaultModel?: string;
+  checklist: string[];
+};
 export type Message = {
   id: string;
   role: "user" | "assistant";
@@ -7,9 +32,18 @@ export type Message = {
   actor: string;
   at: string;
   files?: string[];
+  threadId?: string;
+  model?: string;
+  source?: "demo" | "api";
+  kind?: "discussion" | "prompt";
+  attachmentText?: string;
 };
 export type Stage = {
   id: string;
+  moduleId?: string;
+  defaultModel?: string;
+  threads?: ChatThread[];
+  activeThreadId?: string;
   name: string;
   short: string;
   mode: Mode;
@@ -60,9 +94,14 @@ export type Template = {
   id: string;
   name: string;
   description: string;
-  stages: Pick<Stage, "name" | "short" | "mode" | "assistant">[];
+  stages: (Pick<
+    Stage,
+    "name" | "short" | "mode" | "assistant" | "moduleId" | "defaultModel"
+  > & { checklist?: Stage["checklist"] })[];
 };
 export type AppState = {
+  modules?: TaskModule[];
+  connection?: Connection;
   works: Work[];
   artifacts: Artifact[];
   events: AuditEvent[];

@@ -1,14 +1,22 @@
 import type { Work, AppState, Stage, AuditEvent } from "./types";
 export const uid = (): string => {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return crypto.randomUUID();
   }
-  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.getRandomValues === "function"
+  ) {
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40; // RFC4122 v4
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(
+      "",
+    );
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -28,7 +36,7 @@ export const USERS = [
 export function transitionWork(
   work: Work,
   stageId: string,
-  action: "next" | "skip" | "back",
+  action: "next" | "skip" | "back" | "reopen",
   targetId: string,
   selectedFiles: string[],
   reason: string,
@@ -42,6 +50,11 @@ export function transitionWork(
     throw new Error("변경 사유를 입력해 주세요.");
   if (selectedFiles.some((id) => !source.outputs.includes(id)))
     throw new Error("현재 단계의 산출물만 전달할 수 있습니다.");
+  if(action==='reopen'){
+    if(!['done','skipped'].includes(source.status)||targetId!==source.id)throw new Error('완료 또는 건너뛴 현재 단계만 다시 열 수 있습니다.');
+    result.stages.forEach((s,i)=>{if((i>from&&['done','skipped','active','review'].includes(s.status))||(i!==from&&s.status==='active'))s.status='review';});
+    source.status='active';source.checklist.forEach(c=>c.done=false);return result;
+  }
   if (action === "back") {
     if (source.status === "pending")
       throw new Error(
@@ -63,10 +76,16 @@ export function transitionWork(
       throw new Error("진행 중이거나 재검토 중인 단계에서 전환해 주세요.");
     if (action === "next" && source.checklist.some((c) => !c.done))
       throw new Error("체크리스트를 모두 확인해 주세요.");
+    if (result.stages.slice(0,from).some(s=>!['done','skipped'].includes(s.status)))
+      throw new Error('이전 단계에 미완료 또는 재검토 항목이 남아 있습니다. 먼저 확인해 주세요.');
+    if(result.stages.some(s=>s.id!==source.id&&s.status==='active'))
+      throw new Error('다른 단계가 진행 중입니다. 현재 진행 단계를 먼저 처리하거나 사유를 남겨 되돌려 주세요.');
     if (from < result.stages.length - 1 && to !== from + 1)
       throw new Error("바로 다음 단계를 선택해 주세요.");
     if (from === result.stages.length - 1 && targetId)
       throw new Error("마지막 단계입니다.");
+    if(to>=0 && ['done','skipped'].includes(result.stages[to].status))
+      throw new Error('다음 단계가 이미 완료되었거나 건너뛴 상태입니다. 순서를 조정하거나 사유를 남겨 해당 단계를 되돌려 주세요.');
     if (
       from === result.stages.length - 1 &&
       result.stages
@@ -122,6 +141,8 @@ export function mergeStageStructure(work: Work, proposed: Stage[]): Stage[] {
           short: p.short,
           mode: p.mode,
           assistant: p.assistant,
+          moduleId: p.moduleId,
+          defaultModel: p.defaultModel,
         }
       : structuredClone(p);
   });
@@ -193,9 +214,20 @@ export function addWork(
 ): AppState {
   const template =
     s.templates.find((t) => t.id === templateId) || s.templates[0];
-  const stages = template.stages.map((t) =>
-    newStage(t.name, t.short, t.mode, t.assistant),
-  );
+  const stages = template.stages.map((t) => ({
+    ...newStage(t.name, t.short, t.mode, t.assistant),
+    moduleId: t.moduleId,
+    defaultModel: t.defaultModel,
+    ...(t.checklist
+      ? {
+          checklist: t.checklist.map((c) => ({
+            id: uid(),
+            label: c.label,
+            done: false,
+          })),
+        }
+      : {}),
+  }));
   stages[0].status = "active";
   const work: Work = {
     id:

@@ -1,3 +1,6 @@
+import { reportScope, reportStageGroups } from "./reporting";
+import { TaskModules } from "./TaskModules";
+import { instantiateModule, moduleKey } from "./workflow";
 import { useRef, useState } from "react";
 import {
   Activity,
@@ -150,6 +153,7 @@ export function Templates({ onCreate }: { onCreate: () => void }) {
           </article>
         ))}
       </div>
+      <TaskModules />
       <div className="workflow-guidance">
         <span>
           <Sparkles size={22} />
@@ -196,9 +200,20 @@ export function StageEditor({
       work
         ? structuredClone(work.stages)
         : template
-          ? template.stages.map((s) =>
-              newStage(s.name, s.short, s.mode, s.assistant),
-            )
+          ? template.stages.map((s) => ({
+              ...newStage(s.name, s.short, s.mode, s.assistant),
+              moduleId: s.moduleId,
+              defaultModel: s.defaultModel,
+              ...(s.checklist
+                ? {
+                    checklist: s.checklist.map((c) => ({
+                      ...c,
+                      id: uid(),
+                      done: false,
+                    })),
+                  }
+                : {}),
+            }))
           : [newStage("요구사항 분석", "URS"), newStage("검토", "REVIEW")],
     ),
     [error, setError] = useState(""),
@@ -259,8 +274,23 @@ export function StageEditor({
         return;
       }
     }
-    update((s) =>
-      work
+    update((original) => {
+      const modules = [...(original.modules || [])];
+      for (const task of stages) {
+        task.moduleId = moduleKey(task);
+        if (!modules.some((m) => m.id === task.moduleId))
+          modules.push({
+            id: task.moduleId,
+            name: task.name,
+            short: task.short,
+            description: "사용자 정의 Task",
+            mode: task.mode,
+            assistant: task.assistant,
+            checklist: task.checklist.map((c) => c.label),
+          });
+      }
+      const s = { ...original, modules };
+      return work
         ? {
             ...s,
             works: s.works.map((w) =>
@@ -291,8 +321,8 @@ export function StageEditor({
                   ...s.templates,
                   { id: uid(), name: name.trim(), description, stages },
                 ],
-          },
-    );
+          };
+    });
     notify("워크플로우를 저장했습니다.");
     onClose();
   }
@@ -324,6 +354,34 @@ export function StageEditor({
           </label>
         </div>
       )}
+      <div className="module-compose-toolbar">
+        <label>
+          모듈에서 Task 추가
+          <select
+            aria-label="추가할 Task 모듈"
+            value=""
+            onChange={(e) => {
+              const m = state.modules?.find((m) => m.id === e.target.value);
+              if (m) setStages((v) => [...v, instantiateModule(m)]);
+            }}
+          >
+            <option value="">모듈 선택…</option>
+            {state.modules?.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.short} · {m.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          className="button"
+          onClick={() =>
+            setStages((v) => v.map((s) => ({ ...s, mode: "manual" })))
+          }
+        >
+          모든 Task를 수동으로
+        </button>
+      </div>
       <div className="editor-legend">
         <span>
           <Sparkles size={14} />
@@ -421,6 +479,46 @@ export function StageEditor({
                   onChange={(e) => modify(i, { assistant: e.target.value })}
                 />
               </label>
+              <label>
+                보드 분류 모듈
+                <select
+                  aria-label={i + 1 + "단계 모듈"}
+                  value={s.moduleId || moduleKey(s)}
+                  onChange={(e) => modify(i, { moduleId: e.target.value })}
+                >
+                  {!(state.modules || []).some(
+                    (m) => m.id === (s.moduleId || moduleKey(s)),
+                  ) && (
+                    <option value={s.moduleId || moduleKey(s)}>
+                      개별 Task
+                    </option>
+                  )}
+                  {state.modules?.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.short} · {m.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Task 기본 모델
+                <select
+                  aria-label={i + 1 + "단계 기본 모델"}
+                  disabled={s.mode === "manual"}
+                  value={s.defaultModel || ""}
+                  onChange={(e) => modify(i, { defaultModel: e.target.value })}
+                >
+                  <option value="">모듈 / 시스템 기본값</option>
+                  {[
+                    ...new Set([
+                      ...(state.connection?.models || []),
+                      ...(s.defaultModel ? [s.defaultModel] : []),
+                    ]),
+                  ].map((m) => (
+                    <option key={m}>{m}</option>
+                  ))}
+                </select>
+              </label>
             </div>
             <button
               className="icon-button danger-hover"
@@ -434,7 +532,12 @@ export function StageEditor({
       </div>
       <button
         className="add-stage-button"
-        onClick={() => setStages((v) => [...v, newStage("새 단계", "TASK")])}
+        onClick={() =>
+          setStages((v) => [
+            ...v,
+            { ...newStage("새 단계", "TASK"), moduleId: uid() },
+          ])
+        }
       >
         <Plus size={17} />
         단계 추가
@@ -725,7 +828,7 @@ export function ActivityPage() {
           >
             {["전체 담당자", ...new Set(state.events.map((e) => e.actor))].map(
               (p) => (
-                <option key={p}>{p}</option>
+                <option key={p} value={p}>{p === "전체 담당자" ? "전체 참여자" : p}</option>
               ),
             )}
           </select>
@@ -794,22 +897,7 @@ export function Reports() {
   const start = new Date(today);
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - (period === "day" ? 0 : 6));
-  const events = state.events.filter(
-    (e) =>
-      new Date(e.timestamp) >= start &&
-      new Date(e.timestamp) <= today &&
-      (person === "전체 담당자" || e.actor === person) &&
-      (flow === "전체 워크플로우" ||
-        state.works.find((w) => w.id === e.workId)?.template === flow),
-  );
-  const workIds = new Set(events.map((e) => e.workId));
-  const works = state.works.filter(
-    (w) =>
-      (person === "전체 담당자" || w.owner === person) &&
-      (flow === "전체 워크플로우" || w.template === flow) &&
-      (workIds.has(w.id) ||
-        (new Date(w.createdAt) >= start && new Date(w.createdAt) <= today)),
-  );
+  const {events,works}=reportScope(state,start,today,person,flow);
   const completed = works.filter((w) => getProgress(w) === 100),
     rework = events.filter((e) => /되돌|재검토/.test(e.action));
   const days = Array.from({ length: period === "day" ? 1 : 7 }, (_, i) => {
@@ -826,7 +914,7 @@ export function Reports() {
     };
   });
   const max = Math.max(1, ...days.map((d) => d.count));
-  const stages = ["URS", "FDS", "DEV", "TEST", "GMP", "DEPLOY"];
+  const stageGroups=reportStageGroups(works);
   function report() {
     downloadBlob(
       "FlowMES_업무리포트.csv",
@@ -903,7 +991,7 @@ export function Reports() {
       <SectionTitle
         eyebrow="MAKE EVERY FLOW BETTER"
         title="인사이트 · 리포트"
-        description="업무의 흐름을 돌아보고, 더 나은 assistant와 협업 방식을 발견하세요."
+        description="선택한 참여자의 활동과 관련 업무를 집계합니다. 업무 소유자가 달라도 참여 기록이 있으면 포함됩니다."
       >
         <button className="button" onClick={improvement}>
           <Sparkles size={16} />
@@ -935,11 +1023,11 @@ export function Reports() {
         </span>
         <div className="report-filter-right">
           <select
-            aria-label="리포트 담당자"
+            aria-label="리포트 참여자"
             value={person}
             onChange={(e) => setPerson(e.target.value)}
           >
-            {["전체 담당자", ...new Set(state.works.map((w) => w.owner))].map(
+            {["전체 담당자", ...new Set([...state.works.map((w) => w.owner),...state.events.map(e=>e.actor)])].map(
               (p) => (
                 <option key={p}>{p}</option>
               ),
@@ -1031,21 +1119,13 @@ export function Reports() {
             </div>
           </div>
           <div className="horizontal-bars">
-            {[
-              ...new Set([
-                ...stages,
-                ...works.map((w) => currentStage(w).short),
-              ]),
-            ].map((s, i) => {
-              const count = works.filter(
-                (w) => getProgress(w) < 100 && currentStage(w).short === s,
-              ).length;
+            {stageGroups.map(({id,short,count,manual}) => {
               return (
-                <div key={s}>
-                  <span>{s}</span>
+                <div key={id}>
+                  <span>{short}</span>
                   <div>
                     <i
-                      className={i === 2 || i === 5 ? "manual" : ""}
+                      className={manual ? "manual" : ""}
                       style={{
                         width: `${(count / Math.max(1, works.filter((w) => getProgress(w) < 100).length)) * 100}%`,
                       }}

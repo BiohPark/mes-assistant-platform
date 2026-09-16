@@ -44,6 +44,26 @@ const fixture = (): Work => ({
   ],
 });
 describe("workflow transitions", () => {
+  it('blocks a reordered review from creating a second active stage',()=>{
+    const w=fixture();w.stages[0].status='review';w.stages[1].status='review';w.stages[2].status='active';
+    expect(()=>transitionWork(w,'urs','next','fds',[],'')).toThrow(/진행 중/);
+  });
+  it('reopens a completed single task with a reason and preserves records',()=>{
+    const w=fixture();w.stages=[w.stages[0]];w.stages[0].status='done';
+    expect(()=>transitionWork(w,'urs','reopen','urs',[],'')).toThrow(/사유/);
+    const n=transitionWork(w,'urs','reopen','urs',[],'검토 조건 변경');
+    expect(n.stages[0].status).toBe('active');expect(n.stages[0].checklist.every(c=>!c.done)).toBe(true);
+    expect(n.stages[0].messages).toEqual(w.stages[0].messages);expect(n.stages[0].outputs).toEqual(w.stages[0].outputs);
+  });
+  it('blocks advancing a later review while an earlier task is active', () => {
+    const w=fixture();w.stages[1].status='review';w.stages[1].checklist.forEach(c=>c.done=true);
+    expect(()=>transitionWork(w,'fds','next','dev',[],'')).toThrow(/이전/);
+    expect(()=>transitionWork(w,'fds','skip','dev',[],'later')).toThrow(/이전/);
+  });
+  it('does not reactivate a completed successor when advancing after reordering', () => {
+    const w=fixture();w.stages[1].status='done';
+    expect(()=>transitionWork(w,'urs','next','fds',[],'')).toThrow(/완료/);
+  });
   it("blocks advancement while required checks are incomplete", () => {
     const w = fixture();
     w.stages[0].checklist[0].done = false;

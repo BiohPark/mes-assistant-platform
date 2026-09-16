@@ -7,12 +7,16 @@ import {
   type ReactNode,
 } from "react";
 import { createSeed } from "./seed";
+import { normalizeState } from "./workflow";
+import { resetChatRequests } from "./chatRequests";
 import { event, now, uid } from "./domain";
 import { saveFile } from "./storage";
 import type { AppState, Update, Artifact } from "./types";
 const KEY = "flowmes-demo-v2";
 const Context = createContext<{
   state: AppState;
+  apiKey: string;
+  setApiKey: (value: string) => void;
   update: Update;
   notify: (text: string) => void;
   resetData: () => void;
@@ -39,25 +43,28 @@ function initial() {
         typeof parsed.profile === "string" &&
         parsed.profile.trim()
       )
-        return parsed as AppState;
+        return normalizeState(parsed as AppState);
     }
   } catch {
     /* Default sample is available if storage is unavailable. */
   }
-  return createSeed();
+  return normalizeState(createSeed());
 }
 export function Provider({ children }: { children: ReactNode }) {
+  const [apiKey, setApiKey] = useState("");
   const [state, setState] = useState<AppState>(initial),
     [toast, setToast] = useState(""),
     [storageError, setStorageError] = useState("");
   const update: Update = useCallback((recipe) => setState(recipe), []);
   const notify = useCallback((text: string) => setToast(text), []);
   const resetData = useCallback(() => {
+    resetChatRequests();
     try {
       localStorage.removeItem(KEY);
       localStorage.removeItem("flowmes-demo-v1");
     } catch {}
-    setState(createSeed());
+    setState(normalizeState(createSeed()));
+    setApiKey("");
     notify("샘플 데이터로 초기화되었습니다.");
   }, [notify]);
   useEffect(() => {
@@ -145,7 +152,17 @@ export function Provider({ children }: { children: ReactNode }) {
   };
   return (
     <Context.Provider
-      value={{ state, update, notify, resetData, upload, toast, storageError }}
+      value={{
+        state,
+        apiKey,
+        setApiKey,
+        update,
+        notify,
+        resetData,
+        upload,
+        toast,
+        storageError,
+      }}
     >
       {children}
     </Context.Provider>

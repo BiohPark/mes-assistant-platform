@@ -4,6 +4,7 @@ import App from "./App";
 import "@fontsource-variable/dm-sans";
 import "@fontsource-variable/noto-sans-kr";
 import "./styles.css";
+import "./workflow.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />
