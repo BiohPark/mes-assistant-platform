@@ -80,15 +80,29 @@ export function Workspace({
     );
   const stage = work.stages.find((s) => s.id === stageId) || currentStage(work);
   async function copyLink() {
+    const url =
+      location.origin +
+      location.pathname +
+      "#/work/" +
+      workId +
+      "/" +
+      stage.id;
     try {
-      await navigator.clipboard.writeText(
-        location.origin +
-          location.pathname +
-          "#/work/" +
-          workId +
-          "/" +
-          stage.id,
-      );
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+        notify("현재 단계로 바로 연결되는 링크를 복사했습니다.");
+        return;
+      }
+    } catch {}
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = url;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
       notify("현재 단계로 바로 연결되는 링크를 복사했습니다.");
     } catch {
       notify("주소 표시줄의 링크를 복사해 주세요.");
