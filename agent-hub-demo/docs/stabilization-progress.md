@@ -39,3 +39,12 @@
 - Task 3: 구현 및 검증 완료
 - Task 4: 구현 및 검증 완료
 - Task 5–8: 미착수
+
+## 추가 재검증 — 2026-09-22
+
+- 원격 fetch 후 확인: 60354eb은 origin/main에 포함되지 않음. main merge 없이 기능 브랜치 push 상태.
+- npm test: 37개 통과. npm run build: TypeScript/Vite 통과.
+- 기존 browser-smoke.mjs: 두 탭·요청 수명주기·컨텍스트·권한·설정 저장 통과.
+- 새 browser-lifecycle.mjs: 새 SR 대화/접수번호, 명시적 결과 공유와 내부 메모 비공개, 완료 잠금/후속 메모/사유 있는 재개, 백업 복원으로 변경 롤백, 다른 탭 무효화 통과. 페이지 JavaScript 오류 없음.
+- 재검증한 범위에서 제품 기능 오류는 발견되지 않음. 실제 사내 API는 모의 API 테스트와 별도.
+- npm run test:browser:lifecycle로 확장 시나리오를 재실행할 수 있음.
