@@ -1,1036 +1,1201 @@
-import { TaskChat } from "./TaskChat";
-import { resolveModel } from "./workflow";
-import { useState, useRef } from "react";
+import { WorkSettingsDialog } from "./WorkSettingsDialog";
+import { downloadWorkExport } from "./export";
+import { useState, useEffect } from "react";
 import {
   ArrowLeft,
-  ArrowRight,
-  ArrowUpRight,
-  Check,
-  CheckCheck,
-  ChevronDown,
-  ChevronRight,
-  ClipboardList,
-  Clock3,
-  Download,
-  ExternalLink,
-  FilePlus2,
-  FileText,
-  FolderInput,
-  GitBranch,
-  Link2,
-  MessageSquare,
-  MoreHorizontal,
-  Pencil,
-  Plus,
-  RotateCcw,
   Send,
-  Settings2,
-  ShieldCheck,
-  SkipForward,
-  Sparkles,
-  StickyNote,
-  Upload,
-  X,
+  Paperclip,
+  ArrowUpRight,
+  Plus,
+  Download,
+  MessageSquare,
+  CheckCheck,
+  Link2,
 } from "lucide-react";
-import { useStore, navigate } from "./store";
+import { useHub } from "./store";
+import { uid, now, canSeeWork, visibleMessages } from "./domain";
+import { Avatar, Modal, statusLabels } from "./ui";
+import { putBlob, downloadArtifact, saveDownload, getBlob } from "./files";
+import { hubDB } from "./db/schema";
 import {
-  currentStage,
-  getProgress,
-  event,
-  now,
-  uid,
-  transitionWork,
-} from "./domain";
-import {
-  Avatar,
-  Badge,
-  CheckRow,
-  Empty,
-  FileCard,
-  Modal,
-  AssistantMark,
-  formatDate,
-  formatTime,
-  statusLabel,
-  statusTone,
-} from "./ui";
-import type { Stage, Work } from "./types";
-import { StageEditor } from "./Pages";
+  startRequest,
+  runRequest,
+  cancelRequest,
+  requestSnapshot,
+} from "./app/requestService";
+import { tabId } from "./app/session";
+import { ContextPicker } from "./ContextPicker";
+import type { ArtifactVersion, ContextBundle } from "./types";
 export function Workspace({
   workId,
-  stageId,
-  onSettings,
+  intake = false,
 }: {
   workId: string;
-  stageId?: string;
-  onSettings: () => void;
+  intake?: boolean;
 }) {
-  const { state, notify } = useStore();
-  const [edit, setEdit] = useState(false);
-  const work = state.works.find((w) => w.id === workId);
-  if (!work)
-    return (
-      <Empty
-        title="업무를 찾을 수 없습니다"
-        description="업무 목록에서 다시 선택해 주세요."
-      >
-        <button className="button" onClick={() => navigate("/tasks")}>
-          업무 목록
-        </button>
-      </Empty>
-    );
-  const stage = work.stages.find((s) => s.id === stageId) || currentStage(work);
-  async function copyLink() {
-    const url =
-      location.origin + location.pathname + "#/work/" + workId + "/" + stage.id;
+  const { state: s, dispatch, notify, apiKeys, epoch } = useHub();
+  const w = s.works.find((x) => x.id === workId);
+  const [text, setText] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [mode, setMode] = useState<"import" | "handoff" | null>(null);
+  const [viewBundle, setBundle] = useState<ContextBundle | null>(null);
+  const [preview, setPreview] = useState<ArtifactVersion | null>(null);
+  const [previewText, setPreviewText] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [note, setNote] = useState("");
+  const [discussion, setDiscussion] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [srModal, setSrModal] = useState(false);
+  const [share, setShare] = useState(false);
+  const [shareText, setShareText] = useState("");
+  const [shareFiles, setShareFiles] = useState<string[]>([]);
+  const [shareSr, setShareSr] = useState("");
+  const [srQuery, setSrQuery] = useState("");
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    setSelected([]);
+    setText("");
+  }, [workId, w?.activeThreadId]);
+  useEffect(() => {
+    let live = true;
+    let url = "";
+    setPreviewUrl("");
+    setPreviewText("");
+    if (preview?.blobId && preview.mime.startsWith("image/"))
+      getBlob(preview.blobId)
+        .then((b) => {
+          if (live && b) {
+            url = URL.createObjectURL(b);
+            setPreviewUrl(url);
+          }
+        })
+        .catch(() => {});
+    if (preview) {
+      if (preview.content !== undefined) setPreviewText(preview.content);
+      else if (
+        preview.blobId &&
+        /^(text\/|application\/json)/.test(preview.mime)
+      )
+        getBlob(preview.blobId)
+          .then((b) => b?.text())
+          .then((t) => {
+            if (live) setPreviewText(t ?? "파일을 찾을 수 없습니다.");
+          });
+    }
+    return () => {
+      live = false;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [preview]);
+  if (!w || !canSeeWork(s, workId))
+    return <div className="empty">이 업무를 열람할 수 없습니다.</div>;
+  const a = s.agents.find((x) => x.id === w.agentId)!;
+  const threads = s.threads.filter(
+    (t) =>
+      t.workId === w.id &&
+      (s.session.role !== "requester" ||
+        s.requests.some(
+          (r) => r.requester === s.session.userId && r.threadId === t.id,
+        )),
+  );
+  const t = threads.find((t) => t.id === w.activeThreadId) ?? threads[0];
+  if (!t) return <div>대화를 찾을 수 없습니다.</div>;
+  const p = s.profiles.find((x) => x.id === a.profileId);
+  const staff = s.session.role !== "requester";
+  const messages = visibleMessages(s, t.id);
+  const bundles = (staff ? t.activeBundleIds : [])
+    .map((id) => s.bundles.find((b) => b.id === id))
+    .filter((b): b is ContextBundle => !!b);
+  const actor = (id: string) => s.users.find((u) => u.id === id)?.name ?? id;
+  const artifact = (id: string) => s.artifacts.find((x) => x.id === id);
+  const srIds = [...new Set(threads.flatMap((x) => x.srIds))];
+  async function upload(files: FileList | null, kind: "input" | "output") {
+    if (!files) return;
+    for (const f of Array.from(files)) {
+      try {
+        const blobId = await putBlob(f);
+        const isText =
+          /^(text\/|application\/json)/.test(f.type) ||
+          /\.(txt|md|csv|json|xml|log)$/i.test(f.name);
+        const older = s.artifacts
+          .filter((x) => x.workId === w!.id && x.name === f.name)
+          .sort((x, y) => y.version - x.version)[0];
+        await dispatch({
+          type: "artifact.add",
+          artifact: {
+            id: uid(),
+            workId: w!.id,
+            name: f.name,
+            mime: f.type || "application/octet-stream",
+            size: f.size,
+            version: (older?.version ?? 0) + 1,
+            createdBy: s.session.userId,
+            createdAt: now(),
+            blobId,
+            content: isText ? await f.text() : undefined,
+            previousId: older?.id,
+          },
+          kind,
+        });
+      } catch (e) {
+        notify(String(e));
+      }
+    }
+  }
+  const currentRequest = (s.requestRecords ?? [])
+    .filter(
+      (r) =>
+        r.threadId === t.id &&
+        (staff || (r.role === "requester" && r.actorId === s.session.userId)),
+    )
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .at(-1);
+  const busy =
+    starting ||
+    currentRequest?.status === "pending" ||
+    currentRequest?.status === "streaming";
+  const commandContext = {
+    actorId: s.session.userId,
+    role: s.session.role,
+    tabId,
+    commandId: uid(),
+    epoch,
+  };
+  async function send(retryOf?: string) {
+    const old = retryOf
+      ? s.messages.find((m) => m.id === currentRequest?.userMessageId)?.content
+      : undefined;
+    const prompt = old ?? text.trim();
+    if (!prompt || (busy && !discussion)) return;
+    setStarting(true);
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(url);
-        notify("현재 단계로 바로 연결되는 링크를 복사했습니다.");
+      if (discussion) {
+        if (
+          await dispatch({
+            type: "message.add",
+            message: {
+              id: uid(),
+              threadId: t.id,
+              role: "user",
+              actor: s.session.userId,
+              content: prompt,
+              at: now(),
+              kind: "discussion",
+              source: "human",
+              contextIds: [],
+              fileIds: [],
+            },
+          })
+        )
+          setText("");
         return;
       }
-    } catch {}
-    try {
-      const textarea = document.createElement("textarea");
-      textarea.value = url;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textarea);
-      notify("현재 단계로 바로 연결되는 링크를 복사했습니다.");
-    } catch {
-      notify("주소 표시줄의 링크를 복사해 주세요.");
-    }
-  }
-  function external() {
-    if (!state.externalUrl || !work?.externalId) {
-      onSettings();
-      notify("외부 업무시스템 URL 템플릿과 업무 ID를 설정해 주세요.");
-      return;
-    }
-    try {
-      const url = new URL(
-        state.externalUrl.replace("{id}", encodeURIComponent(work.externalId)),
+      const prepared = await startRequest(
+        hubDB,
+        t.id,
+        prompt,
+        commandContext,
+        retryOf,
       );
-      if (!["http:", "https:"].includes(url.protocol)) throw new Error();
-      window.open(url.href, "_blank", "noopener,noreferrer");
-    } catch {
-      notify("외부 시스템 URL을 확인해 주세요.");
+      setText("");
+      void runRequest(hubDB, prepared, apiKeys[prepared.profile.id] || "");
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "전송 실패");
+    } finally {
+      setStarting(false);
     }
   }
-  return (
-    <>
-      <div className="work-heading">
-        <button className="back-button" onClick={() => navigate("/tasks")}>
-          <ArrowLeft size={15} />
-          전체 업무
-        </button>
-        <div className="work-heading-row">
-          <div>
-            <div className="work-meta">
-              <span>{work.id}</span>
-              <span>·</span>
-              <span>{work.system}</span>
-              <Badge tone={getProgress(work) === 100 ? "neutral" : "green"}>
-                {getProgress(work) === 100 ? "업무 완료" : "진행 중"}
-              </Badge>
-            </div>
-            <h1>{work.title}</h1>
-          </div>
-          <div className="heading-actions">
-            <button className="button" onClick={copyLink}>
-              <Link2 size={15} />
-              링크 복사
-            </button>
-            <button className="button" onClick={external}>
-              <ExternalLink size={15} />
-              {work.externalId || "외부 업무 연결"}
-            </button>
-          </div>
-        </div>
-        <div className="work-detail-meta">
-          <Avatar name={work.owner} small />
-          <span>{work.owner}</span>
-          <span className="dot-separator">·</span>
-          <span>목표일 {formatDate(work.due)}</span>
-          <span className="dot-separator">·</span>
-          <span>{work.template}</span>
-          <button onClick={() => setEdit(true)}>
-            <Settings2 size={14} />
-            워크플로우 편집
+  async function saveOutput(content: string) {
+    const name = window.prompt("산출물 이름", "검토 결과.md");
+    if (!name) return;
+    const older = s.artifacts
+      .filter((f) => f.workId === w!.id && f.name === name)
+      .sort((a, b) => b.version - a.version)[0];
+    if (
+      !(await dispatch({
+        type: "artifact.add",
+        kind: "output",
+        artifact: {
+          id: uid(),
+          workId: w!.id,
+          name,
+          mime: "text/markdown",
+          size: new Blob([content]).size,
+          version: (older?.version ?? 0) + 1,
+          previousId: older?.id,
+          createdBy: s.session.userId,
+          createdAt: now(),
+          content,
+        },
+      }))
+    )
+      return;
+    notify("산출물로 저장했습니다.");
+  }
+  async function saveSelected() {
+    if (!selected.length) return;
+    const name = window.prompt("컨텍스트 묶음 이름", w!.title + " 발췌");
+    if (!name) return;
+    if (
+      !(await dispatch({
+        type: "bundle.save",
+        bundle: {
+          id: uid(),
+          name,
+          sourceWorkId: w!.id,
+          createdBy: s.session.userId,
+          createdAt: now(),
+          excerpts: messages
+            .filter((m) => selected.includes(m.id))
+            .map((m) => ({
+              messageId: m.id,
+              threadId: m.threadId,
+              actor: m.actor,
+              content: m.content,
+              at: m.at,
+            })),
+          artifactIds: [],
+          summary: "",
+          note: "",
+        },
+      }))
+    )
+      return;
+    setSelected([]);
+    notify("재사용할 컨텍스트를 저장했습니다.");
+  }
+  const fileRow = (id: string, kind?: "input" | "output") => {
+    const f = artifact(id);
+    return (
+      f && (
+        <div className="file-row" key={id}>
+          <button className="file-name" onClick={() => setPreview(f)}>
+            <Paperclip size={14} />
+            <span>
+              {f.name}
+              <small>
+                v{f.version} · {actor(f.createdBy)}
+              </small>
+            </span>
           </button>
+          <button
+            aria-label={f.name + " 다운로드"}
+            onClick={() => downloadArtifact(f).catch((e) => notify(e.message))}
+          >
+            <Download size={14} />
+          </button>
+          {kind && staff && (
+            <button
+              aria-label={f.name + " 연결 제거"}
+              onClick={async () =>
+                await dispatch({
+                  type: "artifact.unlink",
+                  workId: w.id,
+                  artifactId: id,
+                  kind,
+                })
+              }
+            >
+              ×
+            </button>
+          )}
         </div>
-      </div>
-      <div className="workflow-strip">
-        <div className="flow-label">
-          <span>
-            <GitBranch size={15} />
-            WORKFLOW
-          </span>
-          <span>
-            {
-              work.stages.filter(
-                (s) => s.status === "done" || s.status === "skipped",
-              ).length
-            }{" "}
-            / {work.stages.length} 단계 완료 <b>{getProgress(work)}%</b>
-          </span>
-        </div>
-        <div className="stage-steps">
-          {work.stages.map((s, i) => (
-            <div className="step-wrap" key={s.id}>
-              <button
-                className={`stage-step ${s.status} ${s.mode} ${s.id === stage.id ? "selected" : ""}`}
-                onClick={() => navigate("/work/" + work.id + "/" + s.id)}
-              >
-                <span className="step-number">
-                  {s.status === "done" ? (
-                    <Check size={14} />
-                  ) : s.status === "skipped" ? (
-                    <SkipForward size={13} />
-                  ) : (
-                    i + 1
-                  )}
-                </span>
-                <span className="step-description">
-                  <strong>{s.name}</strong>
-                  <small>
-                    {s.mode === "manual" ? "수동 작업" : s.short + " Assistant"}
-                  </small>
-                </span>
-                {s.id === stage.id && <span className="step-live" />}
-              </button>
-              {i < work.stages.length - 1 && (
-                <ChevronRight className="step-arrow" size={16} />
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-      <StageSpace key={stage.id} work={work} stage={stage} />
-      {edit && <StageEditor workId={work.id} onClose={() => setEdit(false)} />}
-    </>
-  );
-}
-function StageSpace({ work, stage }: { work: Work; stage: Stage }) {
-  const { state, update, upload, notify } = useStore();
-  const [tab, setTab] = useState("conversation"),
-    [transition, setTransition] = useState<"next" | "skip" | "back" | "reopen" | null>(
-      null,
-    ),
-    [manage, setManage] = useState(false),
-    [selectFiles, setSelectFiles] = useState(false),
-    [newCheck, setNewCheck] = useState(""),
-    [addingCheck, setAddingCheck] = useState(false);
-  const uploadInput = useRef<HTMLInputElement>(null),
-    uploadOutput = useRef<HTMLInputElement>(null);
-  const stageUpdate = (
-    change: (st: Stage) => Stage,
-    action: string,
-    detail: string,
-  ) =>
-    update((s) => {
-      const latest = s.works
-        .find((w) => w.id === work.id)
-        ?.stages.find((st) => st.id === stage.id);
-      if (
-        !latest ||
-        (action.startsWith("체크리스트") &&
-          (latest.status === "done" || latest.status === "skipped"))
       )
-        return s;
-      return {
-        ...s,
-        works: s.works.map((w) =>
-          w.id === work.id
-            ? {
-                ...w,
-                stages: w.stages.map((st) =>
-                  st.id === stage.id ? change(st) : st,
-                ),
-              }
-            : w,
-        ),
-        events: [event(s, work.id, stage.id, action, detail), ...s.events],
-      };
-    });
-  const files = (ids: string[]) =>
-    state.artifacts.filter((a) => ids.includes(a.id));
-  const checks = stage.checklist.filter((c) => c.done).length;
-  const history = state.events.filter(
-    (e) => e.workId === work.id && e.stageId === stage.id,
-  );
+    );
+  };
   return (
-    <div className="stage-space">
-      <aside className="materials-panel">
-        <div className="panel-heading">
-          <h3>
-            <FolderInput size={17} />
-            작업 자료
-          </h3>
-          <span>{stage.inputs.length + stage.outputs.length}</span>
+    <div className="workspace">
+      {w.status === "done" && (
+        <div className="selection-bar">
+          완료된 업무입니다. 자료와 기준을 변경하려면 사유를 남겨 재개하세요.
         </div>
-        <div className="material-section">
-          <div className="subheading">
-            <h4>
-              입력 자료 <span>{stage.inputs.length}</span>
-            </h4>
-            <button
-              className="icon-button"
-              aria-label="입력 자료 추가"
-              onClick={() => setSelectFiles(true)}
-            >
-              <Plus size={16} />
-            </button>
-          </div>
-          <p className="panel-hint">이 단계의 assistant에 제공할 자료</p>
-          {files(stage.inputs).map((a) => (
-            <FileCard
-              key={a.id}
-              artifact={a}
-              compact
-              onRemove={() =>
-                stageUpdate(
-                  (st) => ({
-                    ...st,
-                    inputs: st.inputs.filter((id) => id !== a.id),
-                  }),
-                  "입력 연결 해제",
-                  a.name,
-                )
-              }
-            />
-          ))}
-          {!stage.inputs.length && (
-            <p className="small-empty">연결된 입력 자료가 없습니다.</p>
-          )}
+      )}
+      <header className="work-head">
+        <div className="row">
           <button
-            className="upload-zone"
-            onClick={() => uploadInput.current?.click()}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              void upload(e.dataTransfer.files, work.id, stage.id, "inputs");
-            }}
+            className="icon-btn"
+            onClick={() =>
+              (location.hash = intake ? "#/requests" : "#/agent/" + a.id)
+            }
           >
-            <Upload size={17} />
-            <span>
-              파일을 끌어놓거나 <b>업로드</b>
+            <ArrowLeft size={18} />
+          </button>
+          <Avatar agent={a} />
+          <div>
+            <div className="eyebrow">{a.name} / 독립 업무</div>
+            <h1>{w.title}</h1>
+            <span className="muted">
+              {actor(w.owner)} · {statusLabels[w.status]}
+              {w.archived ? " · 보관됨" : ""}
             </span>
-            <small>문서, 이미지 등 · 파일당 25MB</small>
-          </button>
-          <input
-            ref={uploadInput}
-            type="file"
-            multiple
-            hidden
-            onChange={(e) => {
-              if (e.target.files)
-                void upload(e.target.files, work.id, stage.id, "inputs");
-              e.target.value = "";
-            }}
-          />
-        </div>
-        <div className="material-section">
-          <div className="subheading">
-            <h4>
-              산출물 <span>{stage.outputs.length}</span>
-            </h4>
-            <button
-              className="icon-button"
-              aria-label="산출물 업로드"
-              onClick={() => uploadOutput.current?.click()}
-            >
-              <Plus size={16} />
-            </button>
           </div>
-          <p className="panel-hint">검토 후 다음 단계로 전달할 결과</p>
-          {files(stage.outputs).map((a) => (
-            <FileCard key={a.id} artifact={a} compact />
-          ))}
-          {!stage.outputs.length && (
-            <div className="output-empty">
-              <FileText size={24} />
-              <p>완성된 자료를 여기에 모아주세요.</p>
-            </div>
-          )}
+        </div>
+        <div className="row wrap">
           <button
-            className="button full subtle"
-            onClick={() => uploadOutput.current?.click()}
-          >
-            <FilePlus2 size={15} />
-            산출물 추가
-          </button>
-          <input
-            ref={uploadOutput}
-            type="file"
-            multiple
-            hidden
-            onChange={(e) => {
-              if (e.target.files)
-                void upload(e.target.files, work.id, stage.id, "outputs");
-              e.target.value = "";
-            }}
-          />
-        </div>
-        <div className="material-tip">
-          <Link2 size={17} />
-          <div>
-            <strong>맥락이 이어지는 자료</strong>
-            <p>
-              원본과 버전이 유지된 채로
-              <br />
-              다음 단계의 입력에 연결됩니다.
-            </p>
-          </div>
-        </div>
-      </aside>
-      <section
-        className={`conversation-panel ${stage.mode === "manual" ? "manual-panel" : ""}`}
-      >
-        <div className="conversation-heading">
-          <div>
-            {stage.mode === "assistant" ? (
-              <AssistantMark small />
-            ) : (
-              <span className="manual-mark">
-                <Pencil size={16} />
-              </span>
-            )}
-            <div>
-              <h3>
-                {stage.mode === "assistant"
-                  ? stage.assistant
-                  : stage.name + " · 수동 작업"}
-              </h3>
-              <small>
-                {stage.mode === "assistant"
-                  ? "Task 기본 · " +
-                    resolveModel(state, stage) +
-                    (state.connection?.mode === "api"
-                      ? " · 사내 API"
-                      : " · 샘플 응답")
-                  : "담당자가 직접 진행하고 근거를 남기는 단계"}
-              </small>
-            </div>
-          </div>
-          <Badge tone={statusTone[stage.status]}>
-            {statusLabel[stage.status]}
-          </Badge>
-        </div>
-        <div className="conversation-tabs">
-          <button
-            className={tab === "conversation" ? "active" : ""}
-            onClick={() => setTab("conversation")}
-          >
-            {stage.mode === "assistant" ? (
-              <MessageSquare size={15} />
-            ) : (
-              <Pencil size={15} />
-            )}{" "}
-            {stage.mode === "assistant" ? "대화" : "작업 메모"}
-            {stage.mode === "assistant" && <span>{stage.messages.length}</span>}
-          </button>
-          <button
-            className={tab === "notes" ? "active" : ""}
-            onClick={() => setTab("notes")}
-          >
-            <StickyNote size={15} />
-            메모<span>{stage.notes.length}</span>
-          </button>
-          <button
-            className={tab === "history" ? "active" : ""}
-            onClick={() => setTab("history")}
-          >
-            <Clock3 size={15} />
-            활동 이력
-          </button>
-        </div>
-        {tab === "history" ? (
-          <div className="stage-history">
-            {history.length ? (
-              history.map((e) => (
-                <div className="timeline-item" key={e.id}>
-                  <span className="timeline-dot" />
-                  <div>
-                    <strong>{e.action}</strong>
-                    <p>{e.detail}</p>
-                    <small>
-                      {e.actor} · {formatDate(e.timestamp)}{" "}
-                      {formatTime(e.timestamp)}
-                    </small>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <Empty
-                title="아직 활동 이력이 없습니다"
-                description="대화, 자료 추가, 체크리스트와 단계 변경이 이곳에 기록됩니다."
-              />
-            )}
-          </div>
-        ) : tab === "notes" || stage.mode === "manual" ? (
-          <Notes stage={stage} work={work} />
-        ) : (
-          <TaskChat key={stage.id} work={work} stage={stage} />
-        )}
-      </section>
-      <aside className="checklist-panel">
-        <div className="panel-heading">
-          <h3>
-            <ClipboardList size={17} />
-            단계 체크리스트
-          </h3>
-          <span>
-            {checks}/{stage.checklist.length}
-          </span>
-        </div>
-        <div className="checklist-content">
-          <p className="panel-hint">다음 단계로 넘어가기 전 확인해 주세요.</p>
-          <div className="check-progress">
-            <div
-              style={{
-                width: `${stage.checklist.length ? (checks / stage.checklist.length) * 100 : 0}%`,
-              }}
-            />
-          </div>
-          {stage.checklist.map((c) => (
-            <CheckRow
-              key={c.id}
-              label={c.label}
-              checked={c.done}
-              disabled={stage.status === "done" || stage.status === "skipped"}
-              onChange={() =>
-                stageUpdate(
-                  (st) => ({
-                    ...st,
-                    checklist: st.checklist.map((ch) =>
-                      ch.id === c.id ? { ...ch, done: !ch.done } : ch,
-                    ),
-                  }),
-                  c.done ? "체크리스트 해제" : "체크리스트 완료",
-                  c.label,
+            onClick={() => {
+              navigator.clipboard
+                .writeText(
+                  location.origin +
+                    location.pathname +
+                    "#/work/" +
+                    w.id +
+                    "?thread=" +
+                    t.id,
                 )
-              }
-            />
-          ))}
-          {addingCheck &&
-          stage.status !== "done" &&
-          stage.status !== "skipped" ? (
-            <form
-              className="inline-add"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (
-                  !newCheck.trim() ||
-                  stage.status === "done" ||
-                  stage.status === "skipped"
-                )
-                  return;
-                stageUpdate(
-                  (st) => ({
-                    ...st,
-                    checklist: [
-                      ...st.checklist,
-                      { id: uid(), label: newCheck.trim(), done: false },
-                    ],
-                  }),
-                  "체크리스트 추가",
-                  newCheck.trim(),
-                );
-                setNewCheck("");
-                setAddingCheck(false);
-              }}
-            >
-              <input
-                aria-label="체크리스트 항목"
-                value={newCheck}
-                onChange={(e) => setNewCheck(e.target.value)}
-                placeholder="확인할 항목"
-                autoFocus
-              />
-              <button className="icon-button" aria-label="체크리스트 저장">
-                <Check size={15} />
+                .then(() => notify("대화 링크를 복사했습니다."))
+                .catch(() => notify("링크 복사 권한을 확인하세요."));
+            }}
+          >
+            <Link2 size={14} /> 링크
+          </button>
+          {staff && (
+            <>
+              <button onClick={() => setEditing(true)}>업무 설정</button>
+              <button onClick={() => setMode("handoff")}>
+                <ArrowUpRight size={15} /> 다른 에이전트로 전달
               </button>
-            </form>
-          ) : (
-            <button
-              className="add-check"
-              disabled={stage.status === "done" || stage.status === "skipped"}
-              title="완료 단계는 되돌린 후 체크리스트를 수정할 수 있습니다"
-              onClick={() => setAddingCheck(true)}
-            >
-              <Plus size={14} />
-              항목 추가
-            </button>
+              <button
+                onClick={() => {
+                  setShareSr(srIds[0] ?? "");
+                  setShare(true);
+                }}
+              >
+                요청자에게 공유
+              </button>
+            </>
           )}
-          <div className="check-info">
-            <ShieldCheck size={16} />
-            <p>
-              단계 완료 여부는 담당자가
-              <br />
-              체크리스트를 기반으로 판단합니다.
-            </p>
-          </div>
+          {a.connectionMode !== "api" && a.link1 && (
+            <a className="btn" href={a.link1} target="_blank" rel="noreferrer">
+              외부 assistant ↗
+            </a>
+          )}
         </div>
-        <div className="stage-summary">
-          <div className="subheading">
-            <h4>작업 정보</h4>
+      </header>
+      <div className="work-grid">
+        <aside className="work-side">
+          <div className="section-title">
+            자료 보관함 <span>{w.inputIds.length + w.outputIds.length}</span>
           </div>
-          <dl>
-            <div>
-              <dt>담당자</dt>
-              <dd>
-                <Avatar name={work.owner} small />
-                {work.owner}
-              </dd>
-            </div>
-            <div>
-              <dt>진행 방식</dt>
-              <dd>{stage.mode === "manual" ? "수동" : "Assistant"}</dd>
-            </div>
-            <div>
-              <dt>Task ID</dt>
-              <dd className="mono">{stage.id.slice(0, 12)}</dd>
-            </div>
-            <div>
-              <dt>메시지</dt>
-              <dd>{stage.messages.length}개</dd>
-            </div>
-          </dl>
-        </div>
-        <div className="stage-next">
-          <p>
-            {checks === stage.checklist.length
-              ? "모든 확인 항목을 완료했습니다."
-              : `완료까지 ${stage.checklist.length - checks}개 항목이 남았어요.`}
-          </p>
-          <button
-            className="button primary full"
-            disabled={!["active", "review"].includes(stage.status)}
-            onClick={() => setTransition("next")}
-          >
-            {work.stages.at(-1)?.id === stage.id
-              ? "업무 완료하기"
-              : "다음 단계로"}
-            <ArrowRight size={16} />
-          </button>
-          <div className="manage-wrapper">
-            <button className="manage-stage" onClick={() => setManage(!manage)}>
-              단계 관리
-              <ChevronDown size={14} />
-            </button>
-            {manage && (
-              <div className="manage-menu">
-                <button disabled={!["done","skipped"].includes(stage.status)} onClick={()=>{setManage(false);setTransition("reopen");}}><RotateCcw size={15}/>이 단계 다시 열기</button>
-                <button
-                  disabled={
-                    work.stages[0].id === stage.id || stage.status === "pending"
-                  }
-                  onClick={() => {
-                    setManage(false);
-                    setTransition("back");
-                  }}
-                >
-                  <RotateCcw size={15} />
-                  이전 단계로 되돌리기
-                </button>
-                <button
-                  disabled={!["active", "review"].includes(stage.status)}
-                  onClick={() => {
-                    setManage(false);
-                    setTransition("skip");
-                  }}
-                >
-                  <SkipForward size={15} />
-                  현재 단계 건너뛰기
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </aside>
-      {selectFiles && (
-        <SelectFiles
-          work={work}
-          stage={stage}
-          onClose={() => setSelectFiles(false)}
-        />
-      )}{" "}
-      {transition && (
-        <TransitionDialog
-          work={work}
-          stage={stage}
-          action={transition}
-          onClose={() => setTransition(null)}
-        />
-      )}
-    </div>
-  );
-}
-function Notes({ work, stage }: { work: Work; stage: Stage }) {
-  const { state, update, notify } = useStore();
-  const [text, setText] = useState("");
-  return (
-    <div className="notes-panel">
-      {stage.mode === "manual" && (
-        <div className="manual-notice">
-          <Pencil size={20} />
-          <div>
-            <h3>담당자가 직접 진행하는 단계입니다</h3>
-            <p>
-              외부에서 수행한 작업 내용과 검증 근거를 남겨주세요. 파일은 왼쪽
-              산출물 영역에 추가할 수 있습니다.
-            </p>
-          </div>
-        </div>
-      )}
-      <form
-        className="note-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!text.trim()) return;
-          update((s) => ({
-            ...s,
-            works: s.works.map((w) =>
-              w.id === work.id
-                ? {
-                    ...w,
-                    stages: w.stages.map((st) =>
-                      st.id === stage.id
-                        ? {
-                            ...st,
-                            notes: [
-                              {
-                                id: uid(),
-                                text: text.trim(),
-                                actor: s.profile,
-                                at: now(),
-                              },
-                              ...st.notes,
-                            ],
-                          }
-                        : st,
-                    ),
-                  }
-                : w,
+          {(staff ? (["input", "output"] as const) : (["input"] as const)).map(
+            (kind) => (
+              <section key={kind}>
+                <h3>
+                  {kind === "input" ? "입력 자료" : "산출물"}{" "}
+                  <label className="upload-icon" title="파일 업로드">
+                    <Plus size={15} />
+                    <input
+                      type="file"
+                      multiple
+                      onChange={(e) => {
+                        upload(e.target.files, kind);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                </h3>
+                {(kind === "input" ? w.inputIds : w.outputIds)
+                  .filter(
+                    (id) =>
+                      staff || artifact(id)?.createdBy === s.session.userId,
+                  )
+                  .map((id) => fileRow(id, kind))}
+                {!(kind === "input" ? w.inputIds : w.outputIds).length && (
+                  <p className="muted small">
+                    파일을 추가하거나 결과를 저장하세요.
+                  </p>
+                )}
+              </section>
             ),
-            events: [
-              event(
-                s,
-                work.id,
-                stage.id,
-                "메모 추가",
-                text.trim().slice(0, 90),
-              ),
-              ...s.events,
-            ],
-          }));
-          setText("");
-          notify("메모를 저장했습니다.");
-        }}
-      >
-        <textarea
-          rows={4}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="결정 사항, 작업 내용, 다음 담당자에게 전달할 메모를 남겨주세요."
-          aria-label="단계 메모"
-        />
-        <button className="button primary" disabled={!text.trim()}>
-          <Plus size={15} />
-          메모 남기기
-        </button>
-      </form>
-      {stage.notes.map((n) => (
-        <article className="note-card" key={n.id}>
-          <div>
-            <Avatar name={n.actor} small />
-            <strong>{n.actor}</strong>
-            <time>
-              {formatDate(n.at)} {formatTime(n.at)}
-            </time>
-          </div>
-          <p>{n.text}</p>
-        </article>
-      ))}
-      {stage.notes.length === 0 && (
-        <div className="small-empty">아직 남겨진 메모가 없습니다.</div>
-      )}
-    </div>
-  );
-}
-function SelectFiles({
-  work,
-  stage,
-  onClose,
-}: {
-  work: Work;
-  stage: Stage;
-  onClose: () => void;
-}) {
-  const { state, update, notify } = useStore();
-  const [selected, setSelected] = useState<string[]>([]),
-    [q, setQ] = useState("");
-  const available = state.artifacts.filter(
-    (a) =>
-      !stage.inputs.includes(a.id) &&
-      !stage.outputs.includes(a.id) &&
-      a.name.toLowerCase().includes(q.toLowerCase()),
-  );
-  return (
-    <Modal
-      title="입력 자료 연결"
-      subtitle="이전 단계의 산출물이나 보관함의 자료를 선택하세요. 원본은 유지됩니다."
-      onClose={onClose}
-    >
-      <input
-        className="full-input"
-        placeholder="파일명 검색"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-      />
-      <div className="file-selection">
-        {available.map((a) => (
-          <label key={a.id} className="select-file">
+          )}
+          <p className="small muted">
+            텍스트는 API에 원문 전달됩니다. PDF·Office·이미지는 보관 및
+            다운로드용이며 분석 어댑터가 필요합니다.
+          </p>
+          {staff && (
+            <section>
+              <h3>받은 컨텍스트</h3>
+              {s.handoffs
+                .filter((h) => h.targetWorkId === w.id)
+                .map((h) => (
+                  <button
+                    className="context-tile"
+                    key={h.id}
+                    onClick={() =>
+                      setBundle(s.bundles.find((b) => b.id === h.bundleId)!)
+                    }
+                  >
+                    {s.bundles.find((b) => b.id === h.bundleId)?.name}
+                    <small>
+                      {h.active ? "연결 중" : "연결 해제 · 자료 보존"}
+                    </small>
+                  </button>
+                ))}
+            </section>
+          )}
+        </aside>
+        <main className="chat-panel">
+          <div className="chat-toolbar">
+            <select
+              aria-label="대화방"
+              value={t.id}
+              onChange={async (e) =>
+                await dispatch({
+                  type: "thread.select",
+                  workId: w.id,
+                  threadId: e.target.value,
+                })
+              }
+            >
+              {threads.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.title}
+                </option>
+              ))}
+            </select>
+            {staff && (
+              <button
+                title="새 대화방"
+                onClick={async () => {
+                  const title = window.prompt("새 대화방 이름", "새 대화");
+                  if (title)
+                    await dispatch({
+                      type: "thread.create",
+                      workId: w.id,
+                      title,
+                    });
+                }}
+              >
+                <Plus size={16} />
+              </button>
+            )}
+            <span className={"badge " + (p?.mode === "api" ? "live" : "")}>
+              {p?.mode === "api" ? "실제 API" : "샘플 모드"}
+            </span>
             <input
-              type="checkbox"
-              checked={selected.includes(a.id)}
-              onChange={() =>
-                setSelected((v) =>
-                  v.includes(a.id)
-                    ? v.filter((id) => id !== a.id)
-                    : [...v, a.id],
-                )
+              className="model-input"
+              aria-label="대화 모델"
+              placeholder={a.defaultModel || p?.defaultModel || "기본 모델"}
+              list="models"
+              value={t.model}
+              onChange={async (e) =>
+                await dispatch({
+                  type: "thread.model",
+                  threadId: t.id,
+                  model: e.target.value,
+                })
               }
             />
-            <FileText size={19} />
-            <span>
-              <strong>{a.name}</strong>
-              <small>
-                {a.workId} · v{a.version} · {a.createdBy}
-              </small>
-            </span>
-          </label>
-        ))}
-        {available.length === 0 && (
-          <p className="small-empty">
-            연결할 수 있는 자료가 없습니다. 파일 업로드를 이용해 주세요.
-          </p>
-        )}
-      </div>
-      <div className="modal-footer">
-        <button className="button" onClick={onClose}>
-          취소
-        </button>
-        <button
-          className="button primary"
-          disabled={!selected.length}
-          onClick={() => {
-            update((s) => ({
-              ...s,
-              works: s.works.map((w) =>
-                w.id === work.id
-                  ? {
-                      ...w,
-                      stages: w.stages.map((st) =>
-                        st.id === stage.id
-                          ? {
-                              ...st,
-                              inputs: [...new Set([...st.inputs, ...selected])],
-                            }
-                          : st,
-                      ),
+            <datalist id="models">
+              {p?.models.map((m) => (
+                <option key={m}>{m}</option>
+              ))}
+            </datalist>
+          </div>
+          <div className="sr-tags">
+            {t.srIds.map((id) => (
+              <span className="chip" key={id}>
+                {s.requests.find((r) => r.id === id)?.number || id}
+                {staff && (
+                  <button
+                    onClick={async () =>
+                      await dispatch({
+                        type: "thread.sr",
+                        threadId: t.id,
+                        srIds: t.srIds.filter((x) => x !== id),
+                      })
                     }
-                  : w,
-              ),
-              events: [
-                event(
-                  s,
-                  work.id,
-                  stage.id,
-                  "입력 자료 연결",
-                  `${selected.length}개 자료 연결`,
-                ),
-                ...s.events,
-              ],
-            }));
-            notify(`${selected.length}개 자료를 연결했습니다.`);
-            onClose();
-          }}
-        >
-          <Link2 size={15} />
-          {selected.length}개 자료 연결
-        </button>
-      </div>
-    </Modal>
-  );
-}
-function TransitionDialog({
-  work,
-  stage,
-  action,
-  onClose,
-}: {
-  work: Work;
-  stage: Stage;
-  action: "next" | "skip" | "back" | "reopen";
-  onClose: () => void;
-}) {
-  const { state, update, notify } = useStore();
-  const index = work.stages.findIndex((s) => s.id === stage.id);
-  const [target, setTarget] = useState(
-      action === "reopen" ? stage.id : action === "back"
-        ? work.stages[index - 1]?.id || ""
-        : work.stages[index + 1]?.id || "",
-    ),
-    [reason, setReason] = useState(""),
-    [selected, setSelected] = useState([...stage.outputs]),
-    [error, setError] = useState("");
-  const title =
-    action === "reopen" ? "이 단계 다시 열기" : action === "next"
-      ? target
-        ? "다음 단계로 전달"
-        : "업무 완료하기"
-      : action === "back"
-        ? "이전 단계로 되돌리기"
-        : "현재 단계 건너뛰기";
-  return (
-    <Modal
-      title={title}
-      subtitle={
-        action === "next"
-          ? "체크리스트를 확인하고 전달할 산출물을 선택하세요."
-          : "변경 사유는 활동 이력에 남으며 기존 대화와 파일은 보존됩니다."
-      }
-      onClose={onClose}
-    >
-      <div className="transition-flow">
-        <span>{stage.name}</span>
-        <ArrowRight size={18} />
-        {action === "back" ? (
-          <select value={target} onChange={(e) => setTarget(e.target.value)}>
-            {work.stages.slice(0, index).map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
             ))}
-          </select>
-        ) : (
-          <strong>
-            {work.stages.find((s) => s.id === target)?.name || "업무 완료"}
-          </strong>
-        )}
-      </div>
-      {action === "next" && stage.checklist.some((c) => !c.done) && (
-        <div className="warning-box">
-          미완료 체크리스트 {stage.checklist.filter((c) => !c.done).length}개가
-          있습니다. 작업 공간에서 모두 확인해 주세요.
-        </div>
-      )}
-      {(action === "next" || action === "skip") && target && (
-        <>
-          <h4 className="field-title">다음 단계에 전달할 산출물</h4>
-          <div className="file-selection">
-            {stage.outputs.map((id) => {
-              const a = state.artifacts.find((a) => a.id === id);
-              return (
-                a && (
-                  <CheckRow
-                    key={id}
-                    checked={selected.includes(id)}
-                    label={a.name}
-                    onChange={() =>
-                      setSelected((v) =>
-                        v.includes(id) ? v.filter((i) => i !== id) : [...v, id],
-                      )
+            {staff && (
+              <button
+                className="text-btn"
+                onClick={() => {
+                  setSrQuery("");
+                  setSrModal(true);
+                }}
+              >
+                + SR 연결
+              </button>
+            )}
+          </div>
+          {w.manual ? (
+            <div className="manual-panel">
+              <CheckCheck size={36} />
+              <h2>수동으로 진행하는 업무</h2>
+              <p>자료, 메모와 체크리스트로 진행 내용을 남겨 주세요.</p>
+              <p className="muted">기존 대화와 결과물은 그대로 보존됩니다.</p>
+            </div>
+          ) : (
+            <>
+              <div className="messages">
+                {!messages.length && (
+                  <div className="chat-welcome">
+                    <Avatar agent={a} size={64} />
+                    <h2>{a.name}와 시작하세요</h2>
+                    <p>{a.summary}</p>
+                    {a.examples.slice(0, 2).map((ex) => (
+                      <button key={ex} onClick={() => setText(ex)}>
+                        {ex} ↗
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {messages.map((m) => (
+                  <article
+                    key={m.id}
+                    className={
+                      "message " +
+                      m.role +
+                      (m.kind === "discussion" ? " discussion" : "")
+                    }
+                  >
+                    <header>
+                      <span>
+                        {m.role === "assistant" ? a.name : actor(m.actor)}{" "}
+                        <small>
+                          {m.kind === "discussion"
+                            ? "팀 의견 · AI 미전송"
+                            : m.model
+                              ? `${m.model} · ${m.source === "api" ? "API" : "샘플"}`
+                              : "assistant 요청"}
+                        </small>
+                      </span>
+                      <time>
+                        {new Date(m.at).toLocaleTimeString("ko-KR", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </time>
+                      {staff && (
+                        <input
+                          type="checkbox"
+                          aria-label="메시지 선택"
+                          checked={selected.includes(m.id)}
+                          onChange={(e) =>
+                            setSelected((v) =>
+                              e.target.checked
+                                ? [...v, m.id]
+                                : v.filter((id) => id !== m.id),
+                            )
+                          }
+                        />
+                      )}
+                    </header>
+                    <div className="message-body">{m.content}</div>
+                    <footer>
+                      {m.role === "assistant" && staff && (
+                        <button onClick={() => saveOutput(m.content)}>
+                          산출물로 저장
+                        </button>
+                      )}
+                      {m.contextIds.length > 0 && (
+                        <span className="small muted">
+                          전송 시 컨텍스트 {m.contextIds.length}개
+                        </span>
+                      )}
+                      {m.requestId && (
+                        <button
+                          onClick={async () => {
+                            try {
+                              const record = s.requestRecords?.find(
+                                (r) => r.id === m.requestId,
+                              );
+                              if (!record) throw Error("요청 기록이 없습니다.");
+                              saveDownload(
+                                new Blob(
+                                  [
+                                    JSON.stringify(
+                                      await requestSnapshot(
+                                        hubDB,
+                                        record,
+                                        commandContext,
+                                      ),
+                                      null,
+                                      2,
+                                    ),
+                                  ],
+                                  { type: "application/json" },
+                                ),
+                                "request-" + record.id + ".json",
+                              );
+                            } catch (e) {
+                              notify(String(e));
+                            }
+                          }}
+                        >
+                          이 메시지의 전송 기록
+                        </button>
+                      )}
+                      {m.requestSnapshot && staff && (
+                        <button
+                          onClick={() =>
+                            saveDownload(
+                              new Blob([m.requestSnapshot!], {
+                                type: "application/json",
+                              }),
+                              "request-" + m.id + ".json",
+                            )
+                          }
+                        >
+                          전송 기록
+                        </button>
+                      )}
+                    </footer>
+                  </article>
+                ))}
+                {currentRequest && (
+                  <div className="muted" role="status">
+                    요청:{" "}
+                    {
+                      {
+                        pending: "응답 대기",
+                        streaming: "응답 수신",
+                        succeeded: "완료",
+                        failed: "실패",
+                        cancelled: "중지됨",
+                        interrupted: "연결 중단",
+                      }[currentRequest.status]
+                    }{" "}
+                    ·{" "}
+                    {currentRequest.actualModel ||
+                      currentRequest.requestedModel}{" "}
+                    · {currentRequest.source === "api" ? "API" : "샘플"}
+                    {currentRequest.error && <p>{currentRequest.error}</p>}
+                    {busy && currentRequest.actorId === s.session.userId && (
+                      <button
+                        onClick={() =>
+                          void cancelRequest(
+                            hubDB,
+                            currentRequest.id,
+                            commandContext,
+                          ).catch((e) => notify(String(e)))
+                        }
+                      >
+                        요청 중지
+                      </button>
+                    )}
+                    {["failed", "cancelled", "interrupted"].includes(
+                      currentRequest.status,
+                    ) &&
+                      w.status !== "done" && (
+                        <button onClick={() => void send(currentRequest.id)}>
+                          현재 선택 자료로 재시도
+                        </button>
+                      )}
+                    <button
+                      onClick={async () => {
+                        try {
+                          saveDownload(
+                            new Blob(
+                              [
+                                JSON.stringify(
+                                  await requestSnapshot(
+                                    hubDB,
+                                    currentRequest,
+                                    commandContext,
+                                  ),
+                                  null,
+                                  2,
+                                ),
+                              ],
+                              { type: "application/json" },
+                            ),
+                            "request-" + currentRequest.id + ".json",
+                          );
+                        } catch (e) {
+                          notify(String(e));
+                        }
+                      }}
+                    >
+                      전송 기록
+                    </button>
+                  </div>
+                )}
+              </div>
+              {selected.length > 0 && (
+                <button className="selection-bar" onClick={saveSelected}>
+                  {selected.length}개 메시지를 컨텍스트로 저장
+                </button>
+              )}
+              <div className="composer">
+                <details>
+                  <summary>
+                    이번 대화의 입력 자료 ·{" "}
+                    {(t.selectedInputIds ?? w.inputIds).length}개 선택
+                  </summary>
+                  <p className="small muted">
+                    업로드한 자료는 아래에서 선택한 후 전송됩니다. 원문을 자르지
+                    않으며 요청 한도는{" "}
+                    {Math.round((p?.maxRequestBytes ?? 262144) / 1024)}{" "}
+                    KiB입니다.
+                  </p>
+                  {w.inputIds
+                    .filter(
+                      (id) =>
+                        staff || artifact(id)?.createdBy === s.session.userId,
+                    )
+                    .map((id) => (
+                      <label className="check-row" key={id}>
+                        <input
+                          type="checkbox"
+                          disabled={w.status === "done"}
+                          checked={(t.selectedInputIds ?? w.inputIds).includes(
+                            id,
+                          )}
+                          onChange={async (e) => {
+                            await dispatch({
+                              type: "thread.inputs",
+                              threadId: t.id,
+                              fileIds: e.target.checked
+                                ? [...(t.selectedInputIds ?? w.inputIds), id]
+                                : (t.selectedInputIds ?? w.inputIds).filter(
+                                    (x) => x !== id,
+                                  ),
+                            });
+                          }}
+                        />
+                        {artifact(id)?.name} · v{artifact(id)?.version}
+                      </label>
+                    ))}
+                </details>
+                {bundles.length > 0 && (
+                  <div className="context-chips">
+                    {bundles.map((b) => (
+                      <span className="chip" key={b.id}>
+                        <button onClick={() => setBundle(b)}>
+                          {b.name} · 메시지 {b.excerpts.length} · 파일{" "}
+                          {b.artifactIds.length}
+                        </button>
+                        <button
+                          aria-label="활성 컨텍스트 제거"
+                          onClick={async () =>
+                            await dispatch({
+                              type: "context.detach",
+                              threadId: t.id,
+                              bundleId: b.id,
+                            })
+                          }
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <textarea
+                  aria-label="대화 입력"
+                  placeholder={
+                    discussion
+                      ? "팀에 의견을 남겨 주세요. AI를 호출하지 않습니다."
+                      : "메시지를 입력하세요. 필요한 이전 작업을 가져올 수 있습니다."
+                  }
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                      e.preventDefault();
+                      send();
+                    }
+                  }}
+                />
+                <div className="row between">
+                  <div className="row">
+                    {staff && (
+                      <button onClick={() => setMode("import")}>
+                        <Plus size={14} /> 이전 작업 가져오기
+                      </button>
+                    )}
+                    {staff && (
+                      <label className="small row">
+                        <input
+                          type="checkbox"
+                          checked={discussion}
+                          onChange={(e) => setDiscussion(e.target.checked)}
+                        />
+                        팀 의견
+                      </label>
+                    )}
+                  </div>
+                  <button
+                    className="primary"
+                    disabled={
+                      !text.trim() ||
+                      (busy && !discussion) ||
+                      w.status === "done" ||
+                      (!discussion && a.connectionMode === "external")
+                    }
+                    onClick={() => void send()}
+                  >
+                    <Send size={15} />
+                    {discussion ? "의견 남기기" : "assistant 호출"}
+                  </button>
+                </div>
+                {a.connectionMode === "external" && (
+                  <button
+                    className="text-btn"
+                    onClick={() =>
+                      navigator.clipboard
+                        .writeText(
+                          bundles
+                            .map(
+                              (b) =>
+                                b.excerpts.map((e) => e.content).join("\n") +
+                                "\n" +
+                                b.summary +
+                                "\n" +
+                                b.note,
+                            )
+                            .join("\n\n"),
+                        )
+                        .then(() =>
+                          notify(
+                            "선택한 컨텍스트를 복사했습니다. 파일은 자료함에서 다운로드하세요.",
+                          ),
+                        )
+                    }
+                  >
+                    외부 대화용 컨텍스트 복사
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </main>
+        {staff && (
+          <aside className="work-side right">
+            <section>
+              <h3>
+                체크리스트{" "}
+                <span>
+                  {w.checks.filter((c) => c.done).length}/{w.checks.length}
+                </span>
+              </h3>
+              {w.checks.map((c) => (
+                <label className="check-row" key={c.id}>
+                  <input
+                    type="checkbox"
+                    disabled={w.status === "done"}
+                    checked={c.done}
+                    onChange={async (e) =>
+                      await dispatch({
+                        type: "work.check",
+                        workId: w.id,
+                        checkId: c.id,
+                        done: e.target.checked,
+                      })
                     }
                   />
+                  {c.label}
+                </label>
+              ))}
+              <button
+                className="text-btn"
+                onClick={async () => {
+                  const label = window.prompt("달성 기준");
+                  if (label)
+                    await dispatch({
+                      type: "work.check.add",
+                      workId: w.id,
+                      label,
+                    });
+                }}
+              >
+                + 항목 추가
+              </button>
+            </section>
+            <section>
+              <h3>업무 메모</h3>
+              {w.status === "done" && (
+                <p className="small muted">
+                  추가 메모는 완료 후 기록으로 남으며 완료 당시 자료는 변경하지
+                  않습니다.
+                </p>
+              )}
+              {w.notes.map((n) => (
+                <div className="note" key={n.id}>
+                  <p>{n.text}</p>
+                  <small>
+                    {actor(n.actor)} · {new Date(n.at).toLocaleDateString()}
+                  </small>
+                </div>
+              ))}
+              <textarea
+                aria-label="메모"
+                placeholder="결정 사항이나 메모"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+              />
+              <button
+                disabled={!note.trim()}
+                onClick={async () => {
+                  if (
+                    await dispatch({
+                      type: "work.note",
+                      workId: w.id,
+                      text: note,
+                    })
+                  )
+                    setNote("");
+                }}
+              >
+                메모 남기기
+              </button>
+            </section>
+            <section>
+              <h3>완료 기록</h3>
+              {(s.completions ?? [])
+                .filter((c) => c.workId === w.id)
+                .map((c) => (
+                  <details key={c.id}>
+                    <summary>
+                      {new Date(c.at).toLocaleString()} ·{" "}
+                      {c.legacy ? "이관 시점 스냅샷" : "업무 완료"}
+                    </summary>
+                    <p>
+                      {c.reason || "완료 기준 충족"} · {actor(c.actor)}
+                    </p>
+                    <p>
+                      체크리스트 {c.work.checks.filter((x) => x.done).length}/
+                      {c.work.checks.length} · 입력 {c.work.inputIds.length} ·
+                      산출물 {c.work.outputIds.length}
+                    </p>
+                    <button
+                      onClick={() =>
+                        saveDownload(
+                          new Blob([JSON.stringify(c, null, 2)], {
+                            type: "application/json",
+                          }),
+                          "completion-" + c.id + ".json",
+                        )
+                      }
+                    >
+                      완료 기록 다운로드
+                    </button>
+                  </details>
+                ))}
+              <h3>연결된 업무</h3>
+              {s.handoffs
+                .filter(
+                  (h) => h.sourceWorkId === w.id || h.targetWorkId === w.id,
                 )
-              );
-            })}
-            {!stage.outputs.length && (
-              <p className="small-empty">
-                현재 산출물이 없습니다. 파일 전달 없이 이동합니다.
-              </p>
-            )}
-          </div>
-        </>
-      )}
-      {action !== "next" && (
-        <label className="form-label">
-          변경 사유 <span>*</span>
-          <textarea
-            rows={3}
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            placeholder="예: 비즈니스오너의 요청으로 요구사항 범위 재검토"
-          />
-        </label>
-      )}
-      {(action === "back" || action === "reopen") && (
-        <div className="info-box">
-          되돌아가는 단계의 체크를 초기화하고, 이미 진행한 후속 단계는 재검토로
-          표시합니다.
-        </div>
-      )}
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
-      )}
-      <div className="modal-footer">
-        <button className="button" onClick={onClose}>
-          취소
-        </button>
-        <button
-          className="button primary"
-          onClick={() => {
-            try {
-              const next = transitionWork(
-                work,
-                stage.id,
-                action,
-                target,
-                selected,
-                reason,
-              );
-              const actionLabel =
-                action === "reopen" ? "단계 재검토 · 다시 열기" : action === "back"
-                  ? "단계 되돌리기"
-                  : action === "skip"
-                    ? "단계 건너뛰기"
-                    : target
-                      ? "단계 완료 · 자료 인계"
-                      : "업무 완료";
-              update((s) => ({
-                ...s,
-                works: s.works.map((w) => (w.id === work.id ? next : w)),
-                events: [
-                  event(
-                    s,
-                    work.id,
-                    stage.id,
-                    actionLabel,
-                    `${stage.name} → ${next.stages.find((st) => st.id === target)?.name || "완료"} · ${(action === "back" || action === "reopen") ? "" : selected.length + "개 자료"}${reason ? " · 사유: " + reason : ""}`,
-                  ),
-                  ...s.events,
-                ],
-              }));
-              onClose();
-              if (target) navigate("/work/" + work.id + "/" + target);
-              notify(actionLabel + "를 기록했습니다.");
-            } catch (e) {
-              setError((e as Error).message);
-            }
-          }}
-        >
-          {action === "next" ? "확인하고 완료" : title}
-          <ArrowRight size={15} />
-        </button>
+                .map((h) => {
+                  const other = s.works.find(
+                    (x) =>
+                      x.id ===
+                      (h.sourceWorkId === w.id
+                        ? h.targetWorkId
+                        : h.sourceWorkId),
+                  );
+                  return (
+                    <div className="relation" key={h.id}>
+                      <a href={"#/work/" + other?.id}>
+                        {h.sourceWorkId === w.id
+                          ? "↗ 보낸 업무"
+                          : "↙ 받은 업무"}{" "}
+                        · {other?.title}
+                      </a>
+                      <small>
+                        {actor(h.actor)} · {new Date(h.at).toLocaleDateString()}{" "}
+                        · {h.active ? "연결 중" : "해제됨"}
+                      </small>
+                      {h.active && (
+                        <button
+                          onClick={async () =>
+                            await dispatch({
+                              type: "handoff.detach",
+                              handoffId: h.id,
+                            })
+                          }
+                        >
+                          연결 해제
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+            </section>
+            <section>
+              <h3>활동 이력</h3>
+              {s.activities
+                .filter((x) => x.workId === w.id)
+                .slice()
+                .reverse()
+                .slice(0, 12)
+                .map((x) => (
+                  <div className="activity" key={x.id}>
+                    <span>{x.action}</span>
+                    <small>
+                      {actor(x.actor)} · {x.detail}
+                    </small>
+                  </div>
+                ))}
+            </section>
+            <button
+              onClick={() =>
+                downloadWorkExport(s, w.id).catch((e) => notify(e.message))
+              }
+            >
+              결과·개선 자료 내보내기
+            </button>
+          </aside>
+        )}
       </div>
-    </Modal>
+      {mode && (
+        <ContextPicker
+          workId={w.id}
+          threadId={t.id}
+          mode={mode}
+          onClose={() => setMode(null)}
+        />
+      )}
+      {viewBundle && (
+        <Modal title={viewBundle.name} onClose={() => setBundle(null)} wide>
+          <p className="muted">
+            출처: {s.works.find((x) => x.id === viewBundle.sourceWorkId)?.title}{" "}
+            · {actor(viewBundle.createdBy)} ·{" "}
+            {new Date(viewBundle.createdAt).toLocaleString()}
+          </p>
+          {viewBundle.excerpts.map((e, i) => (
+            <blockquote key={i}>
+              <small>{actor(e.actor)}</small>
+              <p className="prewrap">{e.content}</p>
+            </blockquote>
+          ))}
+          <h3>편집 요약</h3>
+          <p className="prewrap">{viewBundle.summary || "없음"}</p>
+          <h3>전달 메모</h3>
+          <p>{viewBundle.note || "없음"}</p>
+          {viewBundle.artifactIds.map((id) => fileRow(id))}
+        </Modal>
+      )}
+      {preview && (
+        <Modal
+          title={preview.name + " · v" + preview.version}
+          onClose={() => setPreview(null)}
+          wide
+        >
+          <p className="muted">
+            {actor(preview.createdBy)} ·{" "}
+            {new Date(preview.createdAt).toLocaleString()} ·{" "}
+            {preview.size.toLocaleString()} bytes
+          </p>
+          {previewUrl ? (
+            <img
+              className="attachment-preview"
+              src={previewUrl}
+              alt={preview.name}
+            />
+          ) : previewText ? (
+            <pre className="file-preview">{previewText}</pre>
+          ) : (
+            <p>
+              이 형식은 다운로드하여 확인하세요. 원문 파일은 그대로 보관됩니다.
+            </p>
+          )}
+          <button
+            onClick={() =>
+              downloadArtifact(preview).catch((e) => notify(e.message))
+            }
+          >
+            <Download size={16} /> 다운로드
+          </button>
+        </Modal>
+      )}
+      {srModal && (
+        <Modal title="SR 접수번호 연결" onClose={() => setSrModal(false)}>
+          <p className="muted">
+            연결은 태그이며 내부 자료를 요청자에게 공개하지 않습니다.
+          </p>
+          <input
+            placeholder="접수번호 검색"
+            value={srQuery}
+            onChange={(e) => setSrQuery(e.target.value)}
+          />
+          {s.requests
+            .filter((r) => r.number && (!srQuery || r.number.includes(srQuery)))
+            .map((r) => (
+              <label className="check-row" key={r.id}>
+                <input
+                  type="checkbox"
+                  checked={t.srIds.includes(r.id)}
+                  onChange={async (e) =>
+                    await dispatch({
+                      type: "thread.sr",
+                      threadId: t.id,
+                      srIds: e.target.checked
+                        ? [...t.srIds, r.id]
+                        : t.srIds.filter((x) => x !== r.id),
+                    })
+                  }
+                />
+                {r.number} · {r.title}
+              </label>
+            ))}
+        </Modal>
+      )}
+      {editing && (
+        <WorkSettingsDialog work={w} onClose={() => setEditing(false)} />
+      )}
+      {share && (
+        <Modal title="요청자에게 결과 공유" onClose={() => setShare(false)}>
+          <p className="muted">
+            여기에서 선택한 답변과 파일만 요청자에게 공개됩니다.
+          </p>
+          <select value={shareSr} onChange={(e) => setShareSr(e.target.value)}>
+            <option value="">SR 선택</option>
+            {s.requests
+              .filter((r) => r.number)
+              .map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.number} · {r.title}
+                </option>
+              ))}
+          </select>
+          <textarea
+            placeholder="공유할 답변"
+            value={shareText}
+            onChange={(e) => setShareText(e.target.value)}
+          />
+          {[...w.inputIds, ...w.outputIds].map((id) => (
+            <label className="check-row" key={id}>
+              <input
+                type="checkbox"
+                checked={shareFiles.includes(id)}
+                onChange={(e) =>
+                  setShareFiles((v) =>
+                    e.target.checked ? [...v, id] : v.filter((x) => x !== id),
+                  )
+                }
+              />
+              {artifact(id)?.name}
+            </label>
+          ))}
+          <button
+            className="primary"
+            disabled={!shareSr || (!shareText.trim() && !shareFiles.length)}
+            onClick={async () => {
+              if (
+                await dispatch({
+                  type: "sr.share",
+                  srId: shareSr,
+                  workId: w.id,
+                  text: shareText,
+                  artifactIds: shareFiles,
+                })
+              ) {
+                setShare(false);
+                notify("선택한 결과를 공유했습니다.");
+              }
+            }}
+          >
+            선택한 결과 공유
+          </button>
+        </Modal>
+      )}
+    </div>
   );
 }

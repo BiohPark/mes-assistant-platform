@@ -1,321 +1,361 @@
-import type { AppState, Template, Work, Artifact } from "./types";
-import { newStage } from "./domain";
-const definitions: Template["stages"] = [
-  {
-    name: "요구사항 분석",
-    short: "URS",
-    mode: "assistant",
-    assistant: "URS Assistant",
-  },
-  {
-    name: "기능명세 설계",
-    short: "FDS",
-    mode: "assistant",
-    assistant: "FDS Assistant",
-  },
-  { name: "개발", short: "DEV", mode: "manual", assistant: "" },
-  {
-    name: "테스트",
-    short: "TEST",
-    mode: "assistant",
-    assistant: "Test Assistant",
-  },
-  {
-    name: "프로토콜 검증",
-    short: "GMP",
-    mode: "assistant",
-    assistant: "GMP Assistant",
-  },
-  { name: "배포 및 검증", short: "DEPLOY", mode: "manual", assistant: "" },
-];
-export function createSeed(): AppState {
-  const templates: Template[] = [
+import type { Agent, HubState, WorkItem, WorkStatus } from "./types";
+export function seed(): HubState {
+  const at = "2026-09-21T02:30:00.000Z";
+  const agents: Agent[] = [
     {
-      id: "et-standard",
-      name: "ET 표준 개발",
-      description: "요구사항부터 배포 검증까지, Syncade ET 개발의 기본 흐름",
-      stages: definitions,
-    },
-    {
-      id: "et-change",
-      name: "ET 변경 관리",
-      description: "기존 명세를 기반으로 영향 분석과 검증을 집중하는 흐름",
-      stages: [
-        definitions[0],
-        definitions[1],
-        definitions[2],
-        definitions[4],
-        definitions[5],
+      id: "urs",
+      name: "URS Navigator",
+      lv1: "MES Engineering",
+      lv2: "요구사항 분석",
+      summary:
+        "현장의 요청을 명확한 요구사항으로. 질문과 대화를 통해 필요한 정보를 함께 정리합니다.",
+      owner: "staff",
+      status: "open",
+      intake: true,
+      color: "#256b58",
+      examples: [
+        "설비 상태 이력 조회 요구사항을 정리해 주세요.",
+        "업무 목적과 예외 조건을 함께 검토하고 싶어요.",
+      ],
+      checklist: [
+        "비즈니스 목적 확인",
+        "요구사항과 예외 조건 정리",
+        "요청자 검토 반영",
       ],
     },
     {
-      id: "validation",
-      name: "검증 프로토콜",
-      description: "테스트 설계, 수행 결과 정리, 프로토콜 검증",
-      stages: [definitions[3], definitions[4], definitions[5]],
+      id: "fds",
+      name: "FDS Architect",
+      lv1: "MES Engineering",
+      lv2: "기능 설계",
+      summary:
+        "요구사항과 시스템 맥락을 연결해 검토 가능한 기능 명세를 설계합니다.",
+      owner: "staff",
+      status: "open",
+      intake: false,
+      color: "#5275a6",
+      examples: ["전달받은 URS를 바탕으로 기능 명세 초안을 작성해 주세요."],
+      checklist: [
+        "입력 요구사항 확인",
+        "기능과 데이터 매핑 검토",
+        "예외 처리 명세 작성",
+      ],
     },
+    {
+      id: "test",
+      name: "Test Companion",
+      lv1: "Quality & Validation",
+      lv2: "테스트 설계",
+      summary:
+        "명세에서 테스트 조건을 찾아 정상·예외 시나리오를 빠짐없이 구성합니다.",
+      owner: "admin",
+      status: "open",
+      intake: false,
+      color: "#ad7541",
+      examples: ["설비 상태 전이별 테스트 시나리오를 만들어 주세요."],
+      checklist: [
+        "요구사항 추적성 확인",
+        "정상·예외 시나리오 작성",
+        "기대 결과 명시",
+      ],
+    },
+    {
+      id: "gmp",
+      name: "GMP Reviewer",
+      lv1: "Quality & Validation",
+      lv2: "프로토콜 검토",
+      summary:
+        "테스트 프로토콜의 검토 포인트를 정리하고 보완할 근거 자료를 찾습니다.",
+      owner: "admin",
+      status: "working",
+      intake: false,
+      color: "#8865a6",
+      examples: ["이 프로토콜에서 보완할 검토 포인트를 정리해 주세요."],
+      checklist: ["프로토콜 검토", "증빙 자료 연결", "담당자 최종 확인"],
+    },
+    {
+      id: "deploy",
+      name: "Release Desk",
+      lv1: "Operations",
+      lv2: "배포 확인",
+      summary:
+        "수동 배포의 기록과 확인 자료를 한곳에. 변경 결과와 검증 메모를 남깁니다.",
+      owner: "staff",
+      status: "open",
+      intake: false,
+      color: "#687884",
+      examples: ["배포 후 확인할 항목을 정리합니다."],
+      checklist: ["배포 담당자 확인", "타겟 반영 확인", "검증 자료 첨부"],
+    },
+    {
+      id: "legacy",
+      name: "ET Legacy Helper",
+      lv1: "MES Engineering",
+      lv2: "이전 버전",
+      summary:
+        "이전 ET 분석 업무와 자료를 조회할 수 있는 보관용 에이전트입니다.",
+      owner: "staff",
+      status: "retired",
+      intake: false,
+      color: "#87918b",
+      examples: [],
+      checklist: ["기존 자료 확인"],
+    },
+  ].map((a) => ({
+    ...a,
+    link1: "",
+    link2: "",
+    connectionMode: a.id === "deploy" ? "external" : "api",
+    profileId: "internal",
+    defaultModel: "",
+    ...a,
+  })) as Agent[];
+  const defs: [string, string, string, string, WorkStatus][] = [
+    [
+      "urs-work",
+      "urs",
+      "설비 상태 이력 조회 개선",
+      "생산 현장의 설비 상태 변경 이력을 조건별로 조회하고 근거 자료로 내보내는 요청입니다.",
+      "active",
+    ],
+    [
+      "fds-work",
+      "fds",
+      "ET 상태 조회 기능 명세",
+      "URS 검토 결과를 바탕으로 조회 조건, 표시 항목과 예외 처리를 설계합니다.",
+      "review",
+    ],
+    [
+      "test-work",
+      "test",
+      "설비 상태 전이 테스트",
+      "상태 전이와 권한별 테스트 시나리오 및 기대 결과를 준비합니다.",
+      "active",
+    ],
+    [
+      "gmp-work",
+      "gmp",
+      "ET 프로토콜 사전 검토",
+      "작성된 프로토콜의 추적성과 증빙 자료를 확인합니다.",
+      "waiting",
+    ],
+    [
+      "deploy-work",
+      "deploy",
+      "ET 설정 반영 확인",
+      "담당자가 수동 배포 후 조회 결과와 확인 자료를 기록합니다.",
+      "waiting",
+    ],
+    [
+      "urs-clean",
+      "urs",
+      "세척 주기 알림 요구사항",
+      "세척 유효기간 만료 전 알림 시점과 대상자를 확인합니다.",
+      "waiting",
+    ],
+    [
+      "fds-done",
+      "fds",
+      "장비 사용 이력 내보내기",
+      "CSV 내보내기 항목과 조회 범위 명세 작성을 마쳤습니다.",
+      "done",
+    ],
+    [
+      "legacy-work",
+      "legacy",
+      "이전 ET 조회 개선 검토",
+      "이전 버전의 논의와 검토 기록입니다.",
+      "done",
+    ],
   ];
-  const data = [
-    [
-      "설비 상태 전이 로직 개선",
-      "박비오",
-      "높음",
-      1,
-      "2026-09-21",
-      "ET 표준 개발",
-    ],
-    [
-      "CIP 세정 이력 추적 기능 추가",
-      "노기현",
-      "보통",
-      3,
-      "2026-09-23",
-      "ET 표준 개발",
-    ],
-    [
-      "설비 사용 전 점검 체크리스트 개편",
-      "이희준",
-      "보통",
-      0,
-      "2026-09-25",
-      "ET 변경 관리",
-    ],
-    [
-      "Hold time 초과 알림 기능 개선",
-      "김해윤",
-      "높음",
-      4,
-      "2026-09-18",
-      "ET 표준 개발",
-    ],
-    [
-      "교정 주기 관리 화면 개선",
-      "김남우",
-      "보통",
-      2,
-      "2026-09-28",
-      "ET 표준 개발",
-    ],
-    [
-      "설비 마스터 데이터 정합성 검증",
-      "박비오",
-      "보통",
-      6,
-      "2026-09-15",
-      "ET 표준 개발",
-    ],
-    [
-      "설비 사용 권한 매핑 변경",
-      "노기현",
-      "보통",
-      1,
-      "2026-09-30",
-      "ET 변경 관리",
-    ],
-    [
-      "배치별 설비 할당 이력 조회",
-      "이희준",
-      "보통",
-      6,
-      "2026-09-14",
-      "ET 표준 개발",
-    ],
-  ];
-  const works: Work[] = data.map((d, i) => {
-    const stages = (
-      templates.find((t) => t.name === String(d[5]))?.stages || definitions
-    ).map((def, j) => ({
-      ...newStage(def.name, def.short, def.mode, def.assistant),
-      id: `w${i + 1}-s${j + 1}`,
-      status: (j < Number(d[3])
-        ? "done"
-        : j === Number(d[3])
-          ? "active"
-          : "pending") as Work["stages"][number]["status"],
-    }));
-    stages.forEach((s, j) => {
-      s.checklist.forEach(
-        (c, k) =>
-          (c.done = j < Number(d[3]) || (j === Number(d[3]) && k === 0)),
-      );
-    });
-    return {
-      id: `MES-0${42 + i}`,
-      title: String(d[0]),
-      description:
-        "Syncade ET의 설비 운영 프로세스를 개선하고 변경 사항의 추적성과 검증 근거를 확보합니다.",
-      system: "Syncade ET",
-      owner: String(d[1]),
-      priority: d[2] as Work["priority"],
-      due: String(d[4]),
-      externalId: `CR-2026-${String(128 + i).padStart(4, "0")}`,
-      template: String(d[5]),
-      stages,
-      createdAt: `2026-09-${String(7 + i).padStart(2, "0")}T00:00:00.000Z`,
-    };
-  });
-  works[3].stages[3].status = "review";
-  const artifacts: Artifact[] = [
-    {
-      id: "a-urs",
-      name: "URS_설비상태전이_v1.2.md",
-      mime: "text/markdown",
-      size: 2430,
-      version: "1.2",
-      workId: works[0].id,
-      stageId: "w1-s1",
-      createdBy: "노기현",
-      createdAt: "2026-09-15T02:20:00Z",
-      content:
-        "# URS · 설비 상태 전이 로직 개선\n\n문서 상태: 데모용 검토 완료\n버전: 1.2\n\n## URS-001 설비 상태 전이\nIdle → In Use → Dirty → Cleaning → Clean → Idle 순서로 상태를 전이한다.\n\n## URS-002 인터록\n세정 유효기간이 초과한 설비는 사용을 제한하고 사유를 표시한다.\n\n## URS-003 변경 이력\n상태 변경 시 사용자, 시각, 이전 상태, 이후 상태와 사유를 기록한다.\n\n## 확인 필요\n예외 승인 권한과 세정 유효기간은 비즈니스오너가 확인한다.\n",
-    },
-    {
-      id: "a-matrix",
-      name: "설비_상태전이_매트릭스.csv",
-      mime: "text/csv",
-      size: 820,
-      version: "1.0",
-      workId: works[0].id,
-      stageId: "w1-s1",
-      createdBy: "노기현",
-      createdAt: "2026-09-15T02:25:00Z",
-      content:
-        "현재 상태,다음 상태,조건\nIdle,In Use,유효한 세정 이력\nIn Use,Dirty,사용 완료\nDirty,Cleaning,세정 시작\nCleaning,Clean,세정 완료\nClean,Idle,점검 완료\n",
-    },
-    {
-      id: "a-fds",
-      name: "FDS_설비상태전이_v0.1.md",
-      mime: "text/markdown",
-      size: 1820,
-      version: "0.1",
-      workId: works[0].id,
-      stageId: "w1-s2",
-      createdBy: "박비오",
-      createdAt: "2026-09-16T00:15:00Z",
-      content:
-        "# FDS · 설비 상태 전이\n\n상태: 초안 (샘플 문서)\n입력 기준: URS v1.2 / 상태 전이 매트릭스 v1.0\n\n## FDS-001 상태 전이 검증\n전이 요청 시 현재 상태와 허용 전이 매트릭스를 비교한다. 허용되지 않은 전이는 거절한다.\n\n## FDS-002 세정 유효기간\n설비 사용 시작 시 유효기간을 확인한다. 만료 시 사용 불가 안내를 표시한다.\n\n## 추적 관계\nURS-001 → FDS-001\nURS-002 → FDS-002\n\n## 미결정 사항\n예외 승인 권한, 오류 메시지 문구, DB 필드 매핑.\n",
-    },
-    {
-      id: "a-test",
-      name: "CIP_테스트시나리오_v0.3.csv",
-      mime: "text/csv",
-      size: 1840,
-      version: "0.3",
-      workId: works[1].id,
-      stageId: "w2-s4",
-      createdBy: "이희준",
-      createdAt: "2026-09-15T07:20:00Z",
-      content:
-        "ID,시나리오,기대 결과,수행 결과\nTC-001,정상 세정 완료,이력 생성,미수행\nTC-002,세정 중단,중단 사유 기록,미수행\nTC-003,이력 조회,설비별 필터,미수행\n",
-    },
-  ];
-  artifacts.forEach((a) => (a.size = new Blob([a.content || ""]).size));
-  works[0].stages[0].outputs = ["a-urs", "a-matrix"];
-  works[0].stages[1].inputs = ["a-urs", "a-matrix"];
-  works[0].stages[1].outputs = ["a-fds"];
-  works[1].stages[3].outputs = ["a-test"];
-  works[0].stages[1].checklist = [
-    { id: "f1", label: "URS 요구사항 및 입력 자료 확인", done: true },
-    { id: "f2", label: "상태 전이 로직 및 예외 조건 정의", done: true },
-    { id: "f3", label: "요구사항–기능 추적 관계 검토", done: false },
-    { id: "f4", label: "FDS 최종본 검토 및 산출물 확정", done: false },
-  ];
-  works[0].stages[1].messages = [
-    {
-      id: "m1",
-      role: "assistant",
-      actor: "FDS Assistant",
-      at: "2026-09-16T00:05:00Z",
-      content:
-        "안녕하세요, 박비오님. 기능명세 설계를 이어서 진행하겠습니다.\n\n이전 URS 단계에서 전달된 2개 자료가 연결되어 있습니다. 설비 상태 전이 로직과 세정 유효기간 인터록을 중심으로 FDS 초안을 작성할 수 있습니다.",
-      files: ["a-urs", "a-matrix"],
-    },
-    {
-      id: "m2",
-      role: "user",
-      actor: "박비오",
-      at: "2026-09-16T00:10:00Z",
-      content:
-        "URS를 기준으로 상태 전이 로직을 정리해 주세요. 세정 유효기간이 초과된 경우의 예외 처리도 포함해 주세요.",
-    },
-    {
-      id: "m3",
-      role: "assistant",
-      actor: "FDS Assistant",
-      at: "2026-09-16T00:15:00Z",
-      content:
-        "요구사항을 바탕으로 기능명세 초안을 정리했습니다.\n\n01  설비 상태 전이\nIdle → In Use → Dirty → Cleaning → Clean → Idle\n허용된 경로 외 상태 변경 요청은 차단합니다.\n\n02  세정 유효기간 인터록\n사용 시작 시 유효기간을 확인하고, 초과 시 사용 제한 메시지를 표시합니다.\n\n03  변경 이력\n변경 전·후 상태, 요청자, 시각, 사유를 기록합니다.\n\n예외 승인 권한을 어떤 역할에 부여할지 확인해 주시면, 해당 조건을 명세에 반영하겠습니다.",
-      files: ["a-fds"],
-    },
-  ];
-  works[0].stages[0].notes = [
-    {
-      id: "n1",
-      text: "비즈니스오너와 요구사항 범위 확인 완료. 세정 유효기간 기준은 현행 SOP를 참조합니다.",
-      actor: "노기현",
-      at: "2026-09-15T02:30:00Z",
-    },
-  ];
+  const works: WorkItem[] = defs.map(
+    ([id, agentId, title, description, status], i) => ({
+      id,
+      agentId,
+      title,
+      description,
+      status,
+      owner: i === 2 || i === 3 ? "admin" : "staff",
+      createdBy: i === 0 ? "requester" : "staff",
+      createdAt: at,
+      updatedAt: at,
+      archived: false,
+      manual: agentId === "deploy",
+      externalUrl: "",
+      checks: agents
+        .find((a) => a.id === agentId)!
+        .checklist.map((label, j) => ({
+          id: `${id}-check-${j}`,
+          label,
+          done: status === "done" || (j === 0 && status !== "waiting"),
+        })),
+      notes: [],
+      inputIds: id === "urs-work" ? ["requirements-v1"] : [],
+      outputIds: id === "fds-work" ? ["fds-v1"] : [],
+      activeThreadId: `${id}-thread`,
+    }),
+  );
   return {
+    version: 1,
+    users: [
+      { id: "staff", name: "김민준", team: "MES Engineering" },
+      { id: "requester", name: "이서연", team: "Manufacturing" },
+      { id: "admin", name: "박지훈", team: "Platform Admin" },
+    ],
+    session: { userId: "staff", role: "staff" },
+    agents,
+    profiles: [
+      {
+        id: "internal",
+        name: "사내 AI · 데모 연결",
+        mode: "demo",
+        baseUrl: "",
+        chatPath: "/chat/completions",
+        modelsPath: "/models",
+        models: ["glm-5.2", "internal-reasoning"],
+        defaultModel: "glm-5.2",
+        sendNames: false,
+      },
+    ],
     works,
-    artifacts,
-    templates,
-    profile: "박비오",
-    externalUrl: "",
-    events: [
+    threads: works.map((w) => ({
+      id: w.activeThreadId,
+      workId: w.id,
+      title: w.id === "urs-work" ? "요구사항 함께 정리하기" : "첫 번째 대화",
+      createdAt: at,
+      model: "",
+      srIds: w.id === "urs-work" ? ["sr-example"] : [],
+      activeBundleIds: [],
+    })),
+    messages: [
       {
-        id: "e1",
-        workId: works[0].id,
-        stageId: "w1-s2",
-        actor: "박비오",
-        action: "산출물 추가",
-        detail: "FDS_설비상태전이_v0.1.md · 초안",
-        timestamp: "2026-09-16T00:15:00Z",
+        id: "urs-m1",
+        threadId: "urs-work-thread",
+        role: "user",
+        actor: "requester",
+        content:
+          "설비의 상태 변경 이력을 날짜와 설비 ID로 조회하고 싶습니다. 변경 사유와 작업자도 함께 확인해야 합니다.",
+        at,
+        kind: "request",
+        source: "human",
+        contextIds: [],
+        fileIds: ["requirements-v1"],
       },
       {
-        id: "e2",
-        workId: works[0].id,
-        stageId: "w1-s2",
-        actor: "박비오",
-        action: "체크리스트 완료",
-        detail: "상태 전이 로직 및 예외 조건 정의",
-        timestamp: "2026-09-16T00:12:00Z",
+        id: "urs-m2",
+        visibleToRequester: "requester",
+        threadId: "urs-work-thread",
+        role: "assistant",
+        actor: "urs",
+        content:
+          "요청을 정리했습니다.\n\n1. 조회 조건: 설비 ID, 조회 기간, 상태\n2. 결과 항목: 변경 전·후 상태, 변경 시각, 작업자, 변경 사유\n3. 추가 확인: 조회 권한과 최대 조회 기간이 정해져 있나요?\n\n확인된 내용만 요구사항으로 구분하고, 미정 항목은 따로 남기겠습니다.",
+        at,
+        kind: "reply",
+        source: "demo",
+        model: "glm-5.2",
+        contextIds: [],
+        fileIds: [],
       },
       {
-        id: "e3",
-        workId: works[0].id,
-        stageId: "w1-s1",
-        actor: "노기현",
-        action: "단계 완료 · 자료 인계",
-        detail: "URS → FDS · 산출물 2개 연결",
-        timestamp: "2026-09-15T02:30:00Z",
+        id: "urs-m3",
+        threadId: "urs-work-thread",
+        role: "user",
+        actor: "staff",
+        content:
+          "운영 담당자와 QA에 조회 권한이 필요합니다. 기본 조회 기간은 최근 30일이며 CSV 내보내기를 포함해 주세요.",
+        at,
+        kind: "discussion",
+        source: "human",
+        contextIds: [],
+        fileIds: [],
       },
       {
-        id: "e4",
-        workId: works[3].id,
-        stageId: "w4-s4",
-        actor: "김해윤",
-        action: "재검토 요청",
-        detail: "Hold time 경계값 테스트 보완 필요",
-        timestamp: "2026-09-15T01:20:00Z",
+        id: "fds-m1",
+        threadId: "fds-work-thread",
+        role: "user",
+        actor: "staff",
+        content:
+          "설비 상태 조회의 입력 검증과 결과 표시 항목을 기능 명세로 정리해 주세요.",
+        at,
+        kind: "request",
+        source: "human",
+        contextIds: [],
+        fileIds: [],
       },
       {
-        id: "e5",
-        workId: works[5].id,
-        stageId: "w6-s6",
-        actor: "박비오",
-        action: "업무 완료",
-        detail: "설비 마스터 데이터 정합성 검증",
-        timestamp: "2026-09-14T08:00:00Z",
+        id: "fds-m2",
+        threadId: "fds-work-thread",
+        role: "assistant",
+        actor: "fds",
+        content:
+          "기능 명세 초안\n\n• 시작일은 종료일보다 늦을 수 없습니다.\n• 조회 권한을 가진 사용자에게 설비 상태 이력을 표시합니다.\n• 결과가 없는 경우 조회 조건을 유지하고 빈 결과 안내를 표시합니다.\n• 내보내기에는 현재 조회 조건과 조회 시각을 포함합니다.\n\n최대 조회 기간과 CSV 최대 건수는 담당자 확인이 필요합니다.",
+        at,
+        kind: "reply",
+        source: "demo",
+        model: "glm-5.2",
+        contextIds: [],
+        fileIds: [],
+      },
+    ],
+    artifacts: [
+      {
+        id: "requirements-v1",
+        workId: "urs-work",
+        name: "ET_요구사항_메모.txt",
+        mime: "text/plain",
+        size: 190,
+        version: 1,
+        createdBy: "requester",
+        createdAt: at,
+        content:
+          "설비 상태 이력 조회 요청\n조회 조건: 설비 ID, 기간, 상태\n표시 항목: 변경 전후 상태, 변경 시각, 변경 사유, 작업자\n미정 사항: 최대 조회 기간, CSV 최대 건수",
       },
       {
-        id: "e6",
-        workId: works[7].id,
-        stageId: "w8-s6",
-        actor: "이희준",
-        action: "업무 완료",
-        detail: "배치별 설비 할당 이력 조회",
-        timestamp: "2026-09-14T07:00:00Z",
+        id: "fds-v1",
+        workId: "fds-work",
+        name: "FDS_상태조회_초안.md",
+        mime: "text/markdown",
+        size: 140,
+        version: 1,
+        createdBy: "staff",
+        createdAt: at,
+        content:
+          "# ET 상태 조회 기능 명세\n\n조회 조건 검증 후 상태 이력과 작업자 정보를 표시합니다.\n빈 결과와 권한 오류를 별도로 안내합니다.\n\n## 검토 필요\n- 최대 조회 기간\n- 내보내기 건수 제한",
+      },
+    ],
+    bundles: [],
+    handoffs: [],
+    requests: [
+      {
+        id: "sr-example",
+        number: "SR-2026-0001",
+        title: "설비 상태 이력 조회 개선",
+        requester: "requester",
+        workId: "urs-work",
+        threadId: "urs-work-thread",
+        status: "received",
+        createdAt: at,
+        submittedAt: at,
+        results: [],
+      },
+    ],
+    activities: works.map((w) => ({
+      id: `act-${w.id}`,
+      workId: w.id,
+      actor: w.createdBy,
+      at,
+      action: "업무 생성",
+      detail: w.title,
+    })),
+    notifications: [
+      {
+        id: "notice-seed",
+        userId: "staff",
+        title: "새 SR이 접수되었습니다",
+        body: "SR-2026-0001 · 설비 상태 이력 조회 개선",
+        link: "#/requests/sr-example",
+        at,
+        read: false,
       },
     ],
   };

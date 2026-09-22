@@ -1,257 +1,629 @@
-import type { Work, AppState, Stage, AuditEvent } from "./types";
-export const uid = (): string => {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return crypto.randomUUID();
-  }
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.getRandomValues === "function"
-  ) {
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40; // RFC4122 v4
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(
-      "",
-    );
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-  }
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-};
+import type { Action, HubState, WorkItem, ContextBundle } from "./types";
+export const uid = (): string => crypto.randomUUID();
 export const now = () => new Date().toISOString();
-export const USERS = [
-  "박비오",
-  "노기현",
-  "이희준",
-  "김해윤",
-  "김남우",
-] as const;
-export function transitionWork(
-  work: Work,
-  stageId: string,
-  action: "next" | "skip" | "back" | "reopen",
-  targetId: string,
-  selectedFiles: string[],
-  reason: string,
-): Work {
-  const result = structuredClone(work);
-  const from = result.stages.findIndex((s) => s.id === stageId),
-    to = result.stages.findIndex((s) => s.id === targetId);
-  if (from < 0) throw new Error("단계를 찾을 수 없습니다.");
-  const source = result.stages[from];
-  if (action !== "next" && !reason.trim())
-    throw new Error("변경 사유를 입력해 주세요.");
-  if (selectedFiles.some((id) => !source.outputs.includes(id)))
-    throw new Error("현재 단계의 산출물만 전달할 수 있습니다.");
-  if(action==='reopen'){
-    if(!['done','skipped'].includes(source.status)||targetId!==source.id)throw new Error('완료 또는 건너뛴 현재 단계만 다시 열 수 있습니다.');
-    result.stages.forEach((s,i)=>{if((i>from&&['done','skipped','active','review'].includes(s.status))||(i!==from&&s.status==='active'))s.status='review';});
-    source.status='active';source.checklist.forEach(c=>c.done=false);return result;
-  }
-  if (action === "back") {
-    if (source.status === "pending")
-      throw new Error(
-        "대기 중인 단계에서는 되돌릴 수 없습니다. 진행한 단계를 선택해 주세요.",
-      );
-    if (to < 0 || to >= from) throw new Error("이전 단계를 선택해 주세요.");
-    result.stages.forEach((s, i) => {
-      if (
-        (i > to &&
-          ["done", "active", "skipped", "review"].includes(s.status)) ||
-        (i !== to && s.status === "active")
+export const canSeeWork = (s: HubState, id: string) =>
+  s.works.some((w) => w.id === id) &&
+  (s.session.role !== "requester" ||
+    s.requests.some(
+      (r) => r.workId === id && r.requester === s.session.userId,
+    ));
+export const canSeeThread = (s: HubState, id: string) => {
+  const t = s.threads.find((t) => t.id === id);
+  return (
+    !!t &&
+    canSeeWork(s, t.workId) &&
+    (s.session.role !== "requester" ||
+      s.requests.some(
+        (r) => r.threadId === id && r.requester === s.session.userId,
+      ))
+  );
+};
+export const visibleWorks = (s: HubState) =>
+  s.works.filter((w) => canSeeWork(s, w.id));
+export const visibleMessages = (s: HubState, threadId: string) =>
+  canSeeThread(s, threadId)
+    ? s.messages.filter(
+        (m) =>
+          m.threadId === threadId &&
+          (s.session.role !== "requester" ||
+            (m.kind !== "discussion" &&
+              (m.role === "user"
+                ? m.actor === s.session.userId
+                : m.visibleToRequester === s.session.userId))),
       )
-        s.status = "review";
+    : [];
+export function modelFor(s: HubState, id: string) {
+  const t = s.threads.find((t) => t.id === id);
+  const w = s.works.find((w) => w.id === t?.workId);
+  const a = s.agents.find((a) => a.id === w?.agentId);
+  return (
+    t?.model ||
+    a?.defaultModel ||
+    s.profiles.find((p) => p.id === a?.profileId)?.defaultModel ||
+    ""
+  );
+}
+export function reduce(original: HubState, a: Action): HubState {
+  const s = structuredClone(original),
+    actor = s.session.userId,
+    at = now();
+  const require = (ok: unknown, message = "이 작업을 수행할 수 없습니다.") => {
+    if (!ok) throw new Error(message);
+  };
+  const staff = () =>
+    require(s.session.role !== "requester", "담당자 권한이 필요합니다.");
+  const work = (id: string) => {
+    require(canSeeWork(s, id), "업무를 열람할 수 없습니다.");
+    return s.works.find((w) => w.id === id)!;
+  };
+  const thread = (id: string) => {
+    const t = s.threads.find((t) => t.id === id);
+    require(t, "대화가 없습니다.");
+    require(canSeeThread(s, id), "이 대화를 열람할 수 없습니다.");
+    return t!;
+  };
+  const activity = (id: string, action: string, detail = "") => {
+    s.activities.push({ id: uid(), workId: id, actor, at, action, detail });
+    const w = s.works.find((w) => w.id === id);
+    if (w) w.updatedAt = at;
+  };
+  const notify = (userId: string, title: string, body: string, link: string) =>
+    s.notifications.push({
+      id: uid(),
+      userId,
+      title,
+      body,
+      link,
+      at,
+      read: false,
     });
-    result.stages[to].status = "active";
-    result.stages[to].checklist.forEach((c) => (c.done = false));
-  } else {
-    if (!["active", "review"].includes(source.status))
-      throw new Error("진행 중이거나 재검토 중인 단계에서 전환해 주세요.");
-    if (action === "next" && source.checklist.some((c) => !c.done))
-      throw new Error("체크리스트를 모두 확인해 주세요.");
-    if (result.stages.slice(0,from).some(s=>!['done','skipped'].includes(s.status)))
-      throw new Error('이전 단계에 미완료 또는 재검토 항목이 남아 있습니다. 먼저 확인해 주세요.');
-    if(result.stages.some(s=>s.id!==source.id&&s.status==='active'))
-      throw new Error('다른 단계가 진행 중입니다. 현재 진행 단계를 먼저 처리하거나 사유를 남겨 되돌려 주세요.');
-    if (from < result.stages.length - 1 && to !== from + 1)
-      throw new Error("바로 다음 단계를 선택해 주세요.");
-    if (from === result.stages.length - 1 && targetId)
-      throw new Error("마지막 단계입니다.");
-    if(to>=0 && ['done','skipped'].includes(result.stages[to].status))
-      throw new Error('다음 단계가 이미 완료되었거나 건너뛴 상태입니다. 순서를 조정하거나 사유를 남겨 해당 단계를 되돌려 주세요.');
-    if (
-      from === result.stages.length - 1 &&
-      result.stages
-        .slice(0, from)
-        .some((s) => !["done", "skipped"].includes(s.status))
-    )
-      throw new Error(
-        "이전 단계에 미완료 또는 재검토 항목이 남아 있습니다. 먼저 확인해 주세요.",
+  const makeWork = (
+    agentId: string,
+    title: string,
+    owner: string,
+    id = uid(),
+    manual = false,
+  ) => {
+    const agent = s.agents.find((a) => a.id === agentId);
+    require(agent &&
+      agent.status !==
+        "retired", "폐기된 에이전트에는 신규 업무를 만들 수 없습니다.");
+    require(title.trim(), "업무명을 입력하세요.");
+    require(!s.works.some((w) => w.id === id), "중복 업무 ID");
+    const tid = uid();
+    const w: WorkItem = {
+      id,
+      agentId,
+      title: title.trim(),
+      description: "",
+      owner,
+      createdBy: actor,
+      createdAt: at,
+      updatedAt: at,
+      status: "waiting",
+      archived: false,
+      manual,
+      externalUrl: "",
+      checks: agent!.checklist.map((label) => ({
+        id: uid(),
+        label,
+        done: false,
+      })),
+      notes: [],
+      inputIds: [],
+      outputIds: [],
+      activeThreadId: tid,
+    };
+    s.works.push(w);
+    s.threads.push({
+      id: tid,
+      workId: id,
+      title: "첫 번째 대화",
+      createdAt: at,
+      model: "",
+      srIds: [],
+      activeBundleIds: [],
+      selectedInputIds: [],
+    });
+    activity(id, "업무 생성", title);
+    return w;
+  };
+  const availableBundles = (id: string) => {
+    const ids = new Set([
+      ...s.handoffs.filter((h) => h.targetWorkId === id).map((h) => h.bundleId),
+      ...s.threads
+        .filter((t) => t.workId === id)
+        .flatMap((t) => t.activeBundleIds),
+    ]);
+    return s.bundles.filter((b) => b.sourceWorkId === id || ids.has(b.id));
+  };
+  const allowedFiles = (id: string) => {
+    const w = work(id);
+    return new Set([
+      ...w.inputIds,
+      ...w.outputIds,
+      ...availableBundles(id).flatMap((b) => b.artifactIds),
+    ]);
+  };
+  const saveBundle = (b: ContextBundle) => {
+    work(b.sourceWorkId);
+    const existing = s.bundles.find((x) => x.id === b.id);
+    if (existing) {
+      require(JSON.stringify(existing) ===
+        JSON.stringify(b), "저장된 컨텍스트는 변경할 수 없습니다.");
+      return existing;
+    }
+    require(b.name.trim(), "컨텍스트 이름을 입력하세요.");
+    const allowed = allowedFiles(b.sourceWorkId);
+    require(b.artifactIds.every(
+      (id) => allowed.has(id) && s.artifacts.some((f) => f.id === id),
+    ), "전달할 수 없는 자료입니다.");
+    for (const e of b.excerpts) {
+      const m = s.messages.find((m) => m.id === e.messageId);
+      const own =
+        m &&
+        s.threads.some(
+          (t) => t.id === m.threadId && t.workId === b.sourceWorkId,
+        ) &&
+        m.content === e.content &&
+        m.actor === e.actor &&
+        m.threadId === e.threadId &&
+        m.at === e.at;
+      const received = availableBundles(b.sourceWorkId).some((b) =>
+        b.excerpts.some(
+          (x) =>
+            x.messageId === e.messageId &&
+            x.threadId === e.threadId &&
+            x.content === e.content &&
+            x.actor === e.actor &&
+            x.at === e.at,
+        ),
       );
-    source.status = action === "next" ? "done" : "skipped";
-    if (to >= 0) {
-      result.stages[to].status = "active";
-      result.stages[to].inputs = [
-        ...new Set([...result.stages[to].inputs, ...selectedFiles]),
-      ];
+      require(own || received, "메시지 원문이 일치하지 않습니다.");
+    }
+    const frozen = structuredClone(b);
+    s.bundles.push(frozen);
+    activity(b.sourceWorkId, "컨텍스트 저장", b.name);
+    return frozen;
+  };
+  const editableId =
+    a.type === "work.edit"
+      ? Object.keys(a).every((k) =>
+          ["type", "workId", "archived", "expectedRevision"].includes(k),
+        )
+        ? undefined
+        : a.workId
+      : [
+            "work.check",
+            "work.check.add",
+            "thread.create",
+            "artifact.unlink",
+          ].includes(a.type)
+        ? "workId" in a
+          ? a.workId
+          : undefined
+        : a.type === "artifact.add"
+          ? a.artifact.workId
+          : a.type === "message.add"
+            ? s.threads.find((t) => t.id === a.message.threadId)?.workId
+            : [
+                  "thread.model",
+                  "thread.inputs",
+                  "context.attach",
+                  "context.import",
+                ].includes(a.type)
+              ? "threadId" in a
+                ? s.threads.find((t) => t.id === a.threadId)?.workId
+                : undefined
+              : a.type === "handoff"
+                ? a.targetWorkId
+                : undefined;
+  if (editableId && work(editableId).status === "done")
+    throw Error("완료 업무는 사유를 남겨 재개한 후 변경하세요.");
+  switch (a.type) {
+    case "context.import":
+      return reduce(reduce(s, { type: "bundle.save", bundle: a.bundle }), {
+        type: "context.attach",
+        threadId: a.threadId,
+        bundleId: a.bundle.id,
+      });
+    case "thread.inputs": {
+      const t = thread(a.threadId);
+      const w = work(t.workId);
+      require(
+        a.fileIds.every(
+          (id) =>
+            w.inputIds.includes(id) &&
+            (s.session.role !== "requester" ||
+              s.artifacts.find((f) => f.id === id)?.createdBy === actor),
+        ),
+      );
+      t.selectedInputIds = [...new Set(a.fileIds)];
+      activity(w.id, "전송 입력 선택");
+      break;
+    }
+    case "session":
+      require(s.users.some((u) => u.id === a.userId));
+      s.session = { userId: a.userId, role: a.role };
+      break;
+    case "agent.save": {
+      require(s.session.role === "admin", "관리자 권한이 필요합니다.");
+      const old = s.agents.find((x) => x.id === a.agent.id);
+      require(a.agent.name.trim(), "에이전트 이름을 입력하세요.");
+      require(!(
+        old?.intake &&
+        (!a.agent.intake || a.agent.status === "retired")
+      ), "먼저 다른 접수용 에이전트를 지정하세요.");
+      require(!(
+        a.agent.intake && a.agent.status === "retired"
+      ), "폐기 에이전트는 접수를 담당할 수 없습니다.");
+      if (a.agent.intake) s.agents.forEach((x) => (x.intake = false));
+      s.agents = s.agents.filter((x) => x.id !== a.agent.id);
+      s.agents.push(structuredClone(a.agent));
+      break;
+    }
+    case "profile.save":
+      require(s.session.role === "admin", "관리자 권한이 필요합니다.");
+      require(a.profile.maxRequestBytes === undefined ||
+        (Number.isInteger(a.profile.maxRequestBytes) &&
+          a.profile.maxRequestBytes >= 1024 &&
+          a.profile.maxRequestBytes <=
+            16777216), "요청 크기는 1–16384 KiB 범위로 입력하세요.");
+      s.profiles = s.profiles.filter((p) => p.id !== a.profile.id);
+      s.profiles.push(structuredClone(a.profile));
+      break;
+    case "work.create":
+      staff();
+      makeWork(a.agentId, a.title, a.owner, a.id, a.manual).archived =
+        a.archived ?? false;
+      break;
+    case "work.edit": {
+      staff();
+      const w = work(a.workId);
+      for (const key of [
+        "title",
+        "description",
+        "owner",
+        "manual",
+        "archived",
+        "externalUrl",
+      ] as const) {
+        if (a[key] !== undefined) Object.assign(w, { [key]: a[key] });
+      }
+      require(w.title.trim(), "업무명을 입력하세요.");
+      activity(w.id, "업무 수정");
+      break;
+    }
+    case "work.status": {
+      staff();
+      const w = work(a.workId);
+      if (w.status === a.status) break;
+      if (a.status === "done" && w.checks.some((c) => !c.done))
+        require(a.reason.trim(), "미완료 체크리스트가 있습니다. 완료 사유를 입력하세요.");
+      const previousStatus = w.status;
+      const reopening = w.status === "done";
+      if (reopening) require(a.reason.trim(), "다시 여는 사유를 입력하세요.");
+      if (a.status === "done") {
+        require(!(s.requestRecords ?? []).some(
+          (r) =>
+            r.workId === w.id && ["pending", "streaming"].includes(r.status),
+        ), "진행 중 요청을 완료하거나 취소한 후 업무를 완료하세요.");
+        (s.completions ??= []).push({
+          id: uid(),
+          workId: w.id,
+          at,
+          actor,
+          reason: a.reason,
+          legacy: false,
+          work: { ...structuredClone(w), status: "done" },
+        });
+      }
+      w.status = a.status;
+      activity(
+        w.id,
+        reopening ? "업무 재개" : "상태 변경",
+        `${a.status} ${a.reason}`,
+      );
+      s.activities[s.activities.length - 1].transition = {
+        from: previousStatus,
+        to: a.status,
+        reason: a.reason,
+        owner: w.owner,
+        agentId: w.agentId,
+        completionId:
+          a.status === "done" ? s.completions?.at(-1)?.id : undefined,
+      };
+      break;
+    }
+    case "work.check": {
+      staff();
+      const w = work(a.workId);
+      const c = w.checks.find((c) => c.id === a.checkId);
+      require(c);
+      c!.done = a.done;
+      activity(w.id, "체크리스트 변경", c!.label);
+      break;
+    }
+    case "work.check.add": {
+      staff();
+      const w = work(a.workId);
+      require(a.label.trim());
+      w.checks.push({ id: uid(), label: a.label.trim(), done: false });
+      activity(w.id, "체크리스트 추가", a.label);
+      break;
+    }
+    case "work.note": {
+      staff();
+      const w = work(a.workId);
+      require(a.text.trim());
+      w.notes.push({ id: uid(), text: a.text, actor, at });
+      activity(w.id, w.status === "done" ? "완료 후 메모" : "메모 추가");
+      break;
+    }
+    case "thread.create": {
+      staff();
+      const w = work(a.workId);
+      const id = a.id || uid();
+      require(!s.threads.some((t) => t.id === id));
+      s.threads.push({
+        id,
+        workId: w.id,
+        title: a.title.trim() || "새 대화",
+        createdAt: at,
+        model: "",
+        srIds: [],
+        activeBundleIds: [],
+        selectedInputIds: [],
+      });
+      w.activeThreadId = id;
+      activity(w.id, "대화 시작", a.title);
+      break;
+    }
+    case "thread.select": {
+      const w = work(a.workId);
+      require(thread(a.threadId).workId === w.id);
+      w.activeThreadId = a.threadId;
+      break;
+    }
+    case "thread.model": {
+      const t = thread(a.threadId);
+      t.model = a.model;
+      activity(t.workId, "모델 설정", a.model || "에이전트 기본값");
+      break;
+    }
+    case "thread.sr": {
+      staff();
+      const t = thread(a.threadId);
+      require(a.srIds.every((id) =>
+        s.requests.some((r) => r.id === id && r.number),
+      ), "접수된 SR만 연결할 수 있습니다.");
+      t.srIds = [...new Set(a.srIds)];
+      activity(t.workId, "SR 태그 변경");
+      break;
+    }
+    case "message.add": {
+      const t = thread(a.message.threadId);
+      require(!s.messages.some((m) => m.id === a.message.id), "중복 메시지");
+      require(a.message.content.trim());
+      require(a.message.contextIds.every((id) =>
+        t.activeBundleIds.includes(id),
+      ), "비활성 컨텍스트가 포함되어 있습니다.");
+      if (a.message.role === "user")
+        require(a.message.actor === actor, "작성자가 현재 사용자와 다릅니다.");
+      const msg = structuredClone(a.message);
+      if (s.session.role === "requester") {
+        require(msg.kind !==
+          "discussion", "요청자는 팀 의견을 작성할 수 없습니다.");
+        require(!msg.contextIds.length, "내부 컨텍스트를 사용할 수 없습니다.");
+        require(msg.fileIds.every((id) =>
+          s.artifacts.some(
+            (f) =>
+              f.id === id && f.workId === t.workId && f.createdBy === actor,
+          ),
+        ), "본인이 제출한 자료만 사용할 수 있습니다.");
+        if (msg.role === "assistant")
+          require(msg.visibleToRequester ===
+            actor, "요청자 대화의 응답 출처가 일치하지 않습니다.");
+        msg.visibleToRequester = actor;
+      } else delete msg.visibleToRequester;
+      s.messages.push(msg);
+      activity(
+        t.workId,
+        a.message.kind === "discussion" ? "팀 의견" : "대화 메시지",
+      );
+      break;
+    }
+    case "artifact.add": {
+      const w = work(a.artifact.workId);
+      if (s.session.role === "requester") require(a.kind === "input");
+      require(!s.artifacts.some(
+        (f) => f.id === a.artifact.id,
+      ), "이미 저장된 파일 버전입니다.");
+      if (a.artifact.previousId)
+        require(s.artifacts.some(
+          (f) => f.id === a.artifact.previousId && f.workId === w.id,
+        ), "이전 버전을 찾을 수 없습니다.");
+      s.artifacts.push(structuredClone(a.artifact));
+      w[a.kind === "input" ? "inputIds" : "outputIds"].push(a.artifact.id);
+      activity(w.id, "자료 추가", a.artifact.name);
+      break;
+    }
+    case "artifact.unlink": {
+      staff();
+      const w = work(a.workId);
+      const key = a.kind === "input" ? "inputIds" : "outputIds";
+      w[key] = w[key].filter((id) => id !== a.artifactId);
+      activity(w.id, "자료 연결 제거");
+      break;
+    }
+    case "bundle.save":
+      staff();
+      saveBundle(a.bundle);
+      break;
+    case "context.attach": {
+      staff();
+      const t = thread(a.threadId);
+      const b = s.bundles.find((b) => b.id === a.bundleId);
+      require(b);
+      work(b!.sourceWorkId);
+      if (!t.activeBundleIds.includes(a.bundleId))
+        t.activeBundleIds.push(a.bundleId);
+      activity(t.workId, "컨텍스트 추가", b!.name);
+      break;
+    }
+    case "context.detach": {
+      staff();
+      const t = thread(a.threadId);
+      t.activeBundleIds = t.activeBundleIds.filter((id) => id !== a.bundleId);
+      activity(t.workId, "활성 컨텍스트 제거");
+      break;
+    }
+    case "handoff": {
+      staff();
+      const b = saveBundle(a.bundle);
+      const target = a.targetWorkId
+        ? work(a.targetWorkId)
+        : makeWork(
+            a.targetAgentId || "",
+            a.title || b.name,
+            a.owner || actor,
+            a.newWorkId,
+          );
+      require(target.id !== b.sourceWorkId, "같은 업무로 인계할 수 없습니다.");
+      require(s.agents.find((x) => x.id === target.agentId)?.status !==
+        "retired", "폐기 에이전트는 신규 인계를 받을 수 없습니다.");
+      require(a.srIds.every((id) =>
+        s.requests.some((r) => r.id === id && r.number),
+      ), "접수된 SR만 연결할 수 있습니다.");
+      const t = thread(target.activeThreadId);
+      t.activeBundleIds = [...new Set([...t.activeBundleIds, b.id])];
+      t.srIds = [...new Set([...t.srIds, ...a.srIds])];
+      s.handoffs.push({
+        id: uid(),
+        sourceWorkId: b.sourceWorkId,
+        targetWorkId: target.id,
+        targetThreadId: t.id,
+        bundleId: b.id,
+        actor,
+        at,
+        active: true,
+      });
+      activity(target.id, "컨텍스트 수신", b.name);
+      activity(b.sourceWorkId, "컨텍스트 전달", target.title);
+      notify(
+        target.owner,
+        "새 컨텍스트 도착",
+        `${b.name} → ${target.title}`,
+        `#/work/${target.id}`,
+      );
+      break;
+    }
+    case "handoff.detach": {
+      staff();
+      const h = s.handoffs.find((h) => h.id === a.handoffId);
+      require(h);
+      work(h!.sourceWorkId);
+      work(h!.targetWorkId);
+      h!.active = false;
+      h!.detachedAt = at;
+      const t = thread(h!.targetThreadId);
+      t.activeBundleIds = t.activeBundleIds.filter((id) => id !== h!.bundleId);
+      activity(h!.targetWorkId, "업무 연결 해제", "인계 자료와 이력은 보존");
+      break;
+    }
+    case "sr.start": {
+      const agent = s.agents.find((a) => a.intake && a.status !== "retired");
+      require(agent, "접수용 에이전트를 지정하세요.");
+      const id = a.id || uid();
+      require(!s.requests.some((r) => r.id === id));
+      const w = makeWork(
+        agent!.id,
+        a.title || "새 요청",
+        agent!.owner,
+        a.workId,
+      );
+      s.requests.push({
+        id,
+        title: w.title,
+        requester: actor,
+        workId: w.id,
+        threadId: w.activeThreadId,
+        status: "draft",
+        createdAt: at,
+        results: [],
+      });
+      break;
+    }
+    case "sr.submit": {
+      const r = s.requests.find((r) => r.id === a.srId);
+      require(r);
+      require(s.session.role !== "requester" || r!.requester === actor);
+      if (r!.number) break;
+      const year = new Date().getFullYear();
+      const nums = s.requests
+        .map((r) => r.number)
+        .filter((n) => n?.startsWith(`SR-${year}-`))
+        .map((n) => Number(n!.split("-")[2]));
+      r!.number = `SR-${year}-${String(Math.max(0, ...nums) + 1).padStart(4, "0")}`;
+      r!.submittedAt = at;
+      r!.status = "received";
+      const t = thread(r!.threadId);
+      t.srIds = [...new Set([...t.srIds, r!.id])];
+      const w = work(r!.workId);
+      activity(w.id, "SR 접수", r!.number);
+      const owner = s.agents.find((a) => a.id === w.agentId)!.owner;
+      for (const u of new Set([r!.requester, owner]))
+        notify(
+          u,
+          "SR 접수 완료",
+          `${r!.number} · ${r!.title}`,
+          `#/requests/${r!.id}`,
+        );
+      break;
+    }
+    case "sr.share": {
+      staff();
+      work(a.workId);
+      const r = s.requests.find((r) => r.id === a.srId);
+      require(r?.number, "접수된 SR을 선택하세요.");
+      require(a.text.trim() ||
+        a.artifactIds.length, "공유할 결과를 선택하세요.");
+      const files = allowedFiles(a.workId);
+      require(a.artifactIds.every((id) =>
+        files.has(id),
+      ), "공유할 수 없는 자료입니다.");
+      r!.results.push({
+        id: uid(),
+        sourceWorkId: a.workId,
+        text: a.text,
+        artifactIds: [...a.artifactIds],
+        actor,
+        at,
+      });
+      r!.status = "responded";
+      notify(
+        r!.requester,
+        "새 결과가 공유되었습니다",
+        r!.title,
+        `#/requests/${r!.id}`,
+      );
+      activity(a.workId, "요청자에게 결과 공유", r!.number);
+      break;
+    }
+    case "sr.status": {
+      staff();
+      const r = s.requests.find((r) => r.id === a.srId);
+      require(r?.number);
+      r!.status = a.status;
+      activity(r!.workId, "접수 상태 변경", a.status);
+      break;
+    }
+    case "notification.read": {
+      const n = s.notifications.find((n) => n.id === a.id);
+      require(n && n.userId === actor);
+      n!.read = true;
+      break;
     }
   }
-  return result;
-}
-export function getProgress(work: Work): number {
-  return work.stages.length
-    ? Math.round(
-        (work.stages.filter(
-          (s) => s.status === "done" || s.status === "skipped",
-        ).length /
-          work.stages.length) *
-          100,
-      )
-    : 0;
-}
-export function mergeStageStructure(work: Work, proposed: Stage[]): Stage[] {
-  if (!proposed.length) throw new Error("최소 1개의 단계가 필요합니다.");
-  for (const existing of work.stages) {
-    if (
-      !proposed.some((s) => s.id === existing.id) &&
-      (existing.status !== "pending" ||
-        existing.messages.length ||
-        existing.notes.length ||
-        existing.inputs.length ||
-        existing.outputs.length ||
-        existing.checklist.some((c) => c.done))
-    )
-      throw new Error(
-        "작업 기록이 있는 단계는 삭제할 수 없습니다. 최신 상태를 확인해 주세요.",
-      );
-  }
-  const merged = proposed.map((p) => {
-    const current = work.stages.find((s) => s.id === p.id);
-    return current
-      ? {
-          ...current,
-          name: p.name,
-          short: p.short,
-          mode: p.mode,
-          assistant: p.assistant,
-          moduleId: p.moduleId,
-          defaultModel: p.defaultModel,
-        }
-      : structuredClone(p);
-  });
-  if (!merged.some((s) => s.status === "active")) {
-    const next =
-      merged.find((s) => s.status === "review") ||
-      merged.find((s) => s.status === "pending");
-    if (next) next.status = "active";
-  }
-  return merged;
-}
-export const currentStage = (w: Work) =>
-  w.stages.find((s) => s.status === "active") ||
-  w.stages.find((s) => s.status === "review") ||
-  w.stages.find((s) => s.status === "pending") ||
-  w.stages.at(-1)!;
-export const workStatus = (w: Work) =>
-  getProgress(w) === 100
-    ? "완료"
-    : w.stages.some((s) => s.status === "review")
-      ? "검토 필요"
-      : w.stages.some((s) => s.status === "active")
-        ? "진행 중"
-        : "대기";
-export const event = (
-  s: AppState,
-  workId: string,
-  stageId: string,
-  action: string,
-  detail: string,
-): AuditEvent => ({
-  id: uid(),
-  workId,
-  stageId,
-  actor: s.profile,
-  action,
-  detail,
-  timestamp: now(),
-});
-export const newStage = (
-  name: string,
-  short: string,
-  mode: Stage["mode"] = "assistant",
-  assistant = short + " Assistant",
-): Stage => ({
-  id: uid(),
-  name,
-  short,
-  mode,
-  assistant,
-  status: "pending",
-  inputs: [],
-  outputs: [],
-  checklist: [
-    { id: uid(), label: "입력 자료와 작업 범위 확인", done: false },
-    { id: uid(), label: "산출물 작성 및 내용 검토", done: false },
-    { id: uid(), label: "다음 단계 전달 자료 확인", done: false },
-  ],
-  messages: [],
-  notes: [],
-});
-export function addWork(
-  s: AppState,
-  title: string,
-  templateId: string,
-  owner: string,
-  due: string,
-  externalId: string,
-): AppState {
-  const template =
-    s.templates.find((t) => t.id === templateId) || s.templates[0];
-  const stages = template.stages.map((t) => ({
-    ...newStage(t.name, t.short, t.mode, t.assistant),
-    moduleId: t.moduleId,
-    defaultModel: t.defaultModel,
-    ...(t.checklist
-      ? {
-          checklist: t.checklist.map((c) => ({
-            id: uid(),
-            label: c.label,
-            done: false,
-          })),
-        }
-      : {}),
-  }));
-  stages[0].status = "active";
-  const work: Work = {
-    id:
-      "MES-" +
-      String(
-        Math.max(
-          0,
-          ...s.works.map((w) => Number(w.id.replace("MES-", "")) || 0),
-        ) + 1,
-      ).padStart(3, "0"),
-    title,
-    description: "새 업무의 요구사항과 자료를 첫 단계에서 정리해 주세요.",
-    system: "Syncade ET",
-    owner,
-    priority: "보통",
-    due,
-    externalId,
-    template: template.name,
-    stages,
-    createdAt: now(),
-  };
-  return {
-    ...s,
-    works: [work, ...s.works],
-    events: [event(s, work.id, stages[0].id, "업무 생성", title), ...s.events],
-  };
+  return s;
 }

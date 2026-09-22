@@ -1,5 +1,5 @@
-import { defineConfig } from "vite";
+import { defineConfig } from 'vitest/config';
 export default defineConfig({
-  base: "./",
-  build: { reportCompressedSize: false },
+  server: { host: '127.0.0.1', port: 5180, strictPort: true },
+  test: { include: ['src/**/*.test.ts'] },
 });
