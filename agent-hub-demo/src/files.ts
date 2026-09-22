@@ -1,37 +1,25 @@
-const DB = "mes-agent-hub-files-v1";
-function db(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const r = indexedDB.open(DB, 1);
-    r.onupgradeneeded = () => r.result.createObjectStore("blobs");
-    r.onsuccess = () => resolve(r.result);
-    r.onerror = () => reject(r.error);
-  });
-}
+import { hubDB } from "./db/schema";
+import type { Action } from "./types";
+const staged = new Map<string, Blob>();
 export async function putBlob(blob: Blob): Promise<string> {
   const id = crypto.randomUUID();
-  const d = await db();
-  await new Promise<void>((resolve, reject) => {
-    const t = d.transaction("blobs", "readwrite");
-    t.objectStore("blobs").put(blob, id);
-    t.oncomplete = () => resolve();
-    t.onerror = () => reject(t.error);
-  });
-  d.close();
+  staged.set(id, blob);
   return id;
 }
 export async function getBlob(id: string): Promise<Blob | undefined> {
-  const d = await db();
-  return new Promise((resolve, reject) => {
-    const r = d.transaction("blobs").objectStore("blobs").get(id);
-    r.onsuccess = () => {
-      d.close();
-      resolve(r.result);
-    };
-    r.onerror = () => {
-      d.close();
-      reject(r.error);
-    };
-  });
+  return staged.get(id) ?? (await hubDB.table("blobs").get(id))?.blob;
+}
+export function pendingBlobs(a: Action) {
+  const id =
+    a.type === "agent.save"
+      ? a.agent.imageId
+      : a.type === "artifact.add"
+        ? a.artifact.blobId
+        : undefined;
+  return id && staged.has(id) ? [{ id, blob: staged.get(id)! }] : [];
+}
+export function releaseBlobs(ids: string[]) {
+  ids.forEach((id) => staged.delete(id));
 }
 export function saveDownload(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);

@@ -123,6 +123,7 @@ export function reduce(original: HubState, a: Action): HubState {
       model: "",
       srIds: [],
       activeBundleIds: [],
+      selectedInputIds: [],
     });
     activity(id, "업무 생성", title);
     return w;
@@ -185,7 +186,62 @@ export function reduce(original: HubState, a: Action): HubState {
     activity(b.sourceWorkId, "컨텍스트 저장", b.name);
     return frozen;
   };
+  const editableId =
+    a.type === "work.edit"
+      ? Object.keys(a).every((k) =>
+          ["type", "workId", "archived", "expectedRevision"].includes(k),
+        )
+        ? undefined
+        : a.workId
+      : [
+            "work.check",
+            "work.check.add",
+            "thread.create",
+            "artifact.unlink",
+          ].includes(a.type)
+        ? "workId" in a
+          ? a.workId
+          : undefined
+        : a.type === "artifact.add"
+          ? a.artifact.workId
+          : a.type === "message.add"
+            ? s.threads.find((t) => t.id === a.message.threadId)?.workId
+            : [
+                  "thread.model",
+                  "thread.inputs",
+                  "context.attach",
+                  "context.import",
+                ].includes(a.type)
+              ? "threadId" in a
+                ? s.threads.find((t) => t.id === a.threadId)?.workId
+                : undefined
+              : a.type === "handoff"
+                ? a.targetWorkId
+                : undefined;
+  if (editableId && work(editableId).status === "done")
+    throw Error("완료 업무는 사유를 남겨 재개한 후 변경하세요.");
   switch (a.type) {
+    case "context.import":
+      return reduce(reduce(s, { type: "bundle.save", bundle: a.bundle }), {
+        type: "context.attach",
+        threadId: a.threadId,
+        bundleId: a.bundle.id,
+      });
+    case "thread.inputs": {
+      const t = thread(a.threadId);
+      const w = work(t.workId);
+      require(
+        a.fileIds.every(
+          (id) =>
+            w.inputIds.includes(id) &&
+            (s.session.role !== "requester" ||
+              s.artifacts.find((f) => f.id === id)?.createdBy === actor),
+        ),
+      );
+      t.selectedInputIds = [...new Set(a.fileIds)];
+      activity(w.id, "전송 입력 선택");
+      break;
+    }
     case "session":
       require(s.users.some((u) => u.id === a.userId));
       s.session = { userId: a.userId, role: a.role };
@@ -208,12 +264,18 @@ export function reduce(original: HubState, a: Action): HubState {
     }
     case "profile.save":
       require(s.session.role === "admin", "관리자 권한이 필요합니다.");
+      require(a.profile.maxRequestBytes === undefined ||
+        (Number.isInteger(a.profile.maxRequestBytes) &&
+          a.profile.maxRequestBytes >= 1024 &&
+          a.profile.maxRequestBytes <=
+            16777216), "요청 크기는 1–16384 KiB 범위로 입력하세요.");
       s.profiles = s.profiles.filter((p) => p.id !== a.profile.id);
       s.profiles.push(structuredClone(a.profile));
       break;
     case "work.create":
       staff();
-      makeWork(a.agentId, a.title, a.owner, a.id, a.manual);
+      makeWork(a.agentId, a.title, a.owner, a.id, a.manual).archived =
+        a.archived ?? false;
       break;
     case "work.edit": {
       staff();
@@ -238,14 +300,39 @@ export function reduce(original: HubState, a: Action): HubState {
       if (w.status === a.status) break;
       if (a.status === "done" && w.checks.some((c) => !c.done))
         require(a.reason.trim(), "미완료 체크리스트가 있습니다. 완료 사유를 입력하세요.");
+      const previousStatus = w.status;
       const reopening = w.status === "done";
       if (reopening) require(a.reason.trim(), "다시 여는 사유를 입력하세요.");
+      if (a.status === "done") {
+        require(!(s.requestRecords ?? []).some(
+          (r) =>
+            r.workId === w.id && ["pending", "streaming"].includes(r.status),
+        ), "진행 중 요청을 완료하거나 취소한 후 업무를 완료하세요.");
+        (s.completions ??= []).push({
+          id: uid(),
+          workId: w.id,
+          at,
+          actor,
+          reason: a.reason,
+          legacy: false,
+          work: { ...structuredClone(w), status: "done" },
+        });
+      }
       w.status = a.status;
       activity(
         w.id,
         reopening ? "업무 재개" : "상태 변경",
         `${a.status} ${a.reason}`,
       );
+      s.activities[s.activities.length - 1].transition = {
+        from: previousStatus,
+        to: a.status,
+        reason: a.reason,
+        owner: w.owner,
+        agentId: w.agentId,
+        completionId:
+          a.status === "done" ? s.completions?.at(-1)?.id : undefined,
+      };
       break;
     }
     case "work.check": {
@@ -270,7 +357,7 @@ export function reduce(original: HubState, a: Action): HubState {
       const w = work(a.workId);
       require(a.text.trim());
       w.notes.push({ id: uid(), text: a.text, actor, at });
-      activity(w.id, "메모 추가");
+      activity(w.id, w.status === "done" ? "완료 후 메모" : "메모 추가");
       break;
     }
     case "thread.create": {
@@ -286,6 +373,7 @@ export function reduce(original: HubState, a: Action): HubState {
         model: "",
         srIds: [],
         activeBundleIds: [],
+        selectedInputIds: [],
       });
       w.activeThreadId = id;
       activity(w.id, "대화 시작", a.title);

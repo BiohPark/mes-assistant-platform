@@ -96,6 +96,30 @@ export async function buildWorkExport(
   const files: ExportFile[] = [];
   for (const artifact of artifacts)
     files.push(await encodeFile(artifact, readBlob));
+  const requestRecords = [];
+  for (const record of s.requestRecords ?? []) {
+    if (record.workId !== workId) continue;
+    const snapshotMessages = [];
+    for (const m of record.snapshot.messages) {
+      const b = await readBlob(m.contentId);
+      if (!b) throw Error("요청 원문이 없어 내보내기를 중단했습니다.");
+      snapshotMessages.push({
+        role: m.role,
+        content: await b.text(),
+        ...(m.name ? { name: m.name } : {}),
+      });
+    }
+    const { leaseToken, leaseUntil, tabId, ...publicRecord } = record;
+    requestRecords.push({
+      ...publicRecord,
+      requestBody: {
+        model: record.snapshot.model,
+        messages: snapshotMessages,
+        stream: false,
+      },
+    });
+  }
+  const completions = (s.completions ?? []).filter((c) => c.workId === workId);
   const activities = s.activities.filter((a) => a.workId === workId);
   const relatedWorkIds = new Set([
     workId,
@@ -142,6 +166,8 @@ export async function buildWorkExport(
     handoffs,
     activities,
     sharedResults,
+    requestRecords,
+    completions,
     workReferences,
     people: s.users.filter((u) => personIds.has(u.id)),
     agents: s.agents

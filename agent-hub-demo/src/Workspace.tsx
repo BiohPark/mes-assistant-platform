@@ -1,3 +1,4 @@
+import { WorkSettingsDialog } from "./WorkSettingsDialog";
 import { downloadWorkExport } from "./export";
 import { useState, useEffect } from "react";
 import {
@@ -15,7 +16,14 @@ import { useHub } from "./store";
 import { uid, now, canSeeWork, visibleMessages } from "./domain";
 import { Avatar, Modal, statusLabels } from "./ui";
 import { putBlob, downloadArtifact, saveDownload, getBlob } from "./files";
-import { callAssistant } from "./api";
+import { hubDB } from "./db/schema";
+import {
+  startRequest,
+  runRequest,
+  cancelRequest,
+  requestSnapshot,
+} from "./app/requestService";
+import { tabId } from "./app/session";
 import { ContextPicker } from "./ContextPicker";
 import type { ArtifactVersion, ContextBundle } from "./types";
 export function Workspace({
@@ -25,10 +33,10 @@ export function Workspace({
   workId: string;
   intake?: boolean;
 }) {
-  const { state: s, dispatch, notify, apiKeys } = useHub();
+  const { state: s, dispatch, notify, apiKeys, epoch } = useHub();
   const w = s.works.find((x) => x.id === workId);
   const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [mode, setMode] = useState<"import" | "handoff" | null>(null);
   const [viewBundle, setBundle] = useState<ContextBundle | null>(null);
   const [preview, setPreview] = useState<ArtifactVersion | null>(null);
@@ -112,7 +120,7 @@ export function Workspace({
         const older = s.artifacts
           .filter((x) => x.workId === w!.id && x.name === f.name)
           .sort((x, y) => y.version - x.version)[0];
-        dispatch({
+        await dispatch({
           type: "artifact.add",
           artifact: {
             id: uid(),
@@ -134,137 +142,125 @@ export function Workspace({
       }
     }
   }
-  async function send() {
-    if (!text.trim() || busy) return;
-    const prompt = text.trim();
-    const threadId = t.id;
-    setBusy(true);
+  const currentRequest = (s.requestRecords ?? [])
+    .filter(
+      (r) =>
+        r.threadId === t.id &&
+        (staff || (r.role === "requester" && r.actorId === s.session.userId)),
+    )
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .at(-1);
+  const busy =
+    starting ||
+    currentRequest?.status === "pending" ||
+    currentRequest?.status === "streaming";
+  const commandContext = {
+    actorId: s.session.userId,
+    role: s.session.role,
+    tabId,
+    commandId: uid(),
+    epoch,
+  };
+  async function send(retryOf?: string) {
+    const old = retryOf
+      ? s.messages.find((m) => m.id === currentRequest?.userMessageId)?.content
+      : undefined;
+    const prompt = old ?? text.trim();
+    if (!prompt || (busy && !discussion)) return;
+    setStarting(true);
     try {
       if (discussion) {
-        dispatch({
-          type: "message.add",
-          message: {
-            id: uid(),
-            threadId,
-            role: "user",
-            actor: s.session.userId,
-            content: prompt,
-            at: now(),
-            kind: "discussion",
-            source: "human",
-            contextIds: [],
-            fileIds: [],
-          },
-        });
-        setText("");
+        if (
+          await dispatch({
+            type: "message.add",
+            message: {
+              id: uid(),
+              threadId: t.id,
+              role: "user",
+              actor: s.session.userId,
+              content: prompt,
+              at: now(),
+              kind: "discussion",
+              source: "human",
+              contextIds: [],
+              fileIds: [],
+            },
+          })
+        )
+          setText("");
         return;
       }
-      if (a.connectionMode === "external")
-        throw Error("외부 assistant를 열고 컨텍스트를 복사해 전달하세요.");
-      const result = await callAssistant(
-        s,
-        threadId,
+      const prepared = await startRequest(
+        hubDB,
+        t.id,
         prompt,
-        apiKeys[a.profileId] || "",
+        commandContext,
+        retryOf,
       );
-      if (
-        !dispatch({
-          type: "message.add",
-          message: {
-            id: uid(),
-            threadId,
-            role: "user",
-            actor: s.session.userId,
-            content: prompt,
-            at: now(),
-            kind: "request",
-            source: "human",
-            contextIds: staff ? [...t.activeBundleIds] : [],
-            fileIds: w!.inputIds.filter(
-              (id) =>
-                staff ||
-                s.artifacts.find((f) => f.id === id)?.createdBy ===
-                  s.session.userId,
-            ),
-            requestSnapshot: result.snapshot,
-          },
-        })
-      )
-        return;
-      dispatch({
-        type: "message.add",
-        message: {
-          id: uid(),
-          threadId,
-          role: "assistant",
-          actor: a.id,
-          content: result.content,
-          at: now(),
-          kind: "reply",
-          visibleToRequester: staff ? undefined : s.session.userId,
-          source: result.source,
-          model: result.model,
-          contextIds: staff ? [...t.activeBundleIds] : [],
-          fileIds: [],
-        },
-      });
       setText("");
+      void runRequest(hubDB, prepared, apiKeys[prepared.profile.id] || "");
     } catch (e) {
-      notify(e instanceof Error ? e.message : "연결 실패");
+      notify(e instanceof Error ? e.message : "전송 실패");
     } finally {
-      setBusy(false);
+      setStarting(false);
     }
   }
-  function saveOutput(content: string) {
+  async function saveOutput(content: string) {
     const name = window.prompt("산출물 이름", "검토 결과.md");
     if (!name) return;
     const older = s.artifacts
       .filter((f) => f.workId === w!.id && f.name === name)
       .sort((a, b) => b.version - a.version)[0];
-    dispatch({
-      type: "artifact.add",
-      kind: "output",
-      artifact: {
-        id: uid(),
-        workId: w!.id,
-        name,
-        mime: "text/markdown",
-        size: new Blob([content]).size,
-        version: (older?.version ?? 0) + 1,
-        previousId: older?.id,
-        createdBy: s.session.userId,
-        createdAt: now(),
-        content,
-      },
-    });
+    if (
+      !(await dispatch({
+        type: "artifact.add",
+        kind: "output",
+        artifact: {
+          id: uid(),
+          workId: w!.id,
+          name,
+          mime: "text/markdown",
+          size: new Blob([content]).size,
+          version: (older?.version ?? 0) + 1,
+          previousId: older?.id,
+          createdBy: s.session.userId,
+          createdAt: now(),
+          content,
+        },
+      }))
+    )
+      return;
     notify("산출물로 저장했습니다.");
   }
-  function saveSelected() {
+  async function saveSelected() {
     if (!selected.length) return;
     const name = window.prompt("컨텍스트 묶음 이름", w!.title + " 발췌");
     if (!name) return;
-    dispatch({
-      type: "bundle.save",
-      bundle: {
-        id: uid(),
-        name,
-        sourceWorkId: w!.id,
-        createdBy: s.session.userId,
-        createdAt: now(),
-        excerpts: messages
-          .filter((m) => selected.includes(m.id))
-          .map((m) => ({
-            messageId: m.id,
-            threadId: m.threadId,
-            actor: m.actor,
-            content: m.content,
-            at: m.at,
-          })),
-        artifactIds: [],
-        summary: "",
-        note: "",
-      },
-    });
+    if (
+      !(await dispatch({
+        type: "bundle.save",
+        bundle: {
+          id: uid(),
+          name,
+          sourceWorkId: w!.id,
+          createdBy: s.session.userId,
+          createdAt: now(),
+          excerpts: messages
+            .filter((m) => selected.includes(m.id))
+            .map((m) => ({
+              messageId: m.id,
+              threadId: m.threadId,
+              actor: m.actor,
+              content: m.content,
+              at: m.at,
+            })),
+          artifactIds: [],
+          summary: "",
+          note: "",
+        },
+      }))
+    )
+      return;
     setSelected([]);
     notify("재사용할 컨텍스트를 저장했습니다.");
   }
@@ -291,8 +287,8 @@ export function Workspace({
           {kind && staff && (
             <button
               aria-label={f.name + " 연결 제거"}
-              onClick={() =>
-                dispatch({
+              onClick={async () =>
+                await dispatch({
                   type: "artifact.unlink",
                   workId: w.id,
                   artifactId: id,
@@ -309,6 +305,11 @@ export function Workspace({
   };
   return (
     <div className="workspace">
+      {w.status === "done" && (
+        <div className="selection-bar">
+          완료된 업무입니다. 자료와 기준을 변경하려면 사유를 남겨 재개하세요.
+        </div>
+      )}
       <header className="work-head">
         <div className="row">
           <button
@@ -437,8 +438,8 @@ export function Workspace({
             <select
               aria-label="대화방"
               value={t.id}
-              onChange={(e) =>
-                dispatch({
+              onChange={async (e) =>
+                await dispatch({
                   type: "thread.select",
                   workId: w.id,
                   threadId: e.target.value,
@@ -454,10 +455,14 @@ export function Workspace({
             {staff && (
               <button
                 title="새 대화방"
-                onClick={() => {
+                onClick={async () => {
                   const title = window.prompt("새 대화방 이름", "새 대화");
                   if (title)
-                    dispatch({ type: "thread.create", workId: w.id, title });
+                    await dispatch({
+                      type: "thread.create",
+                      workId: w.id,
+                      title,
+                    });
                 }}
               >
                 <Plus size={16} />
@@ -472,8 +477,8 @@ export function Workspace({
               placeholder={a.defaultModel || p?.defaultModel || "기본 모델"}
               list="models"
               value={t.model}
-              onChange={(e) =>
-                dispatch({
+              onChange={async (e) =>
+                await dispatch({
                   type: "thread.model",
                   threadId: t.id,
                   model: e.target.value,
@@ -492,8 +497,8 @@ export function Workspace({
                 {s.requests.find((r) => r.id === id)?.number || id}
                 {staff && (
                   <button
-                    onClick={() =>
-                      dispatch({
+                    onClick={async () =>
+                      await dispatch({
                         type: "thread.sr",
                         threadId: t.id,
                         srIds: t.srIds.filter((x) => x !== id),
@@ -592,6 +597,39 @@ export function Workspace({
                           전송 시 컨텍스트 {m.contextIds.length}개
                         </span>
                       )}
+                      {m.requestId && (
+                        <button
+                          onClick={async () => {
+                            try {
+                              const record = s.requestRecords?.find(
+                                (r) => r.id === m.requestId,
+                              );
+                              if (!record) throw Error("요청 기록이 없습니다.");
+                              saveDownload(
+                                new Blob(
+                                  [
+                                    JSON.stringify(
+                                      await requestSnapshot(
+                                        hubDB,
+                                        record,
+                                        commandContext,
+                                      ),
+                                      null,
+                                      2,
+                                    ),
+                                  ],
+                                  { type: "application/json" },
+                                ),
+                                "request-" + record.id + ".json",
+                              );
+                            } catch (e) {
+                              notify(String(e));
+                            }
+                          }}
+                        >
+                          이 메시지의 전송 기록
+                        </button>
+                      )}
                       {m.requestSnapshot && staff && (
                         <button
                           onClick={() =>
@@ -609,7 +647,74 @@ export function Workspace({
                     </footer>
                   </article>
                 ))}
-                {busy && <div className="muted">응답을 기다리는 중…</div>}
+                {currentRequest && (
+                  <div className="muted" role="status">
+                    요청:{" "}
+                    {
+                      {
+                        pending: "응답 대기",
+                        streaming: "응답 수신",
+                        succeeded: "완료",
+                        failed: "실패",
+                        cancelled: "중지됨",
+                        interrupted: "연결 중단",
+                      }[currentRequest.status]
+                    }{" "}
+                    ·{" "}
+                    {currentRequest.actualModel ||
+                      currentRequest.requestedModel}{" "}
+                    · {currentRequest.source === "api" ? "API" : "샘플"}
+                    {currentRequest.error && <p>{currentRequest.error}</p>}
+                    {busy && currentRequest.actorId === s.session.userId && (
+                      <button
+                        onClick={() =>
+                          void cancelRequest(
+                            hubDB,
+                            currentRequest.id,
+                            commandContext,
+                          ).catch((e) => notify(String(e)))
+                        }
+                      >
+                        요청 중지
+                      </button>
+                    )}
+                    {["failed", "cancelled", "interrupted"].includes(
+                      currentRequest.status,
+                    ) &&
+                      w.status !== "done" && (
+                        <button onClick={() => void send(currentRequest.id)}>
+                          현재 선택 자료로 재시도
+                        </button>
+                      )}
+                    <button
+                      onClick={async () => {
+                        try {
+                          saveDownload(
+                            new Blob(
+                              [
+                                JSON.stringify(
+                                  await requestSnapshot(
+                                    hubDB,
+                                    currentRequest,
+                                    commandContext,
+                                  ),
+                                  null,
+                                  2,
+                                ),
+                              ],
+                              { type: "application/json" },
+                            ),
+                            "request-" + currentRequest.id + ".json",
+                          );
+                        } catch (e) {
+                          notify(String(e));
+                        }
+                      }}
+                    >
+                      전송 기록
+                    </button>
+                  </div>
+                )}
               </div>
               {selected.length > 0 && (
                 <button className="selection-bar" onClick={saveSelected}>
@@ -617,6 +722,46 @@ export function Workspace({
                 </button>
               )}
               <div className="composer">
+                <details>
+                  <summary>
+                    이번 대화의 입력 자료 ·{" "}
+                    {(t.selectedInputIds ?? w.inputIds).length}개 선택
+                  </summary>
+                  <p className="small muted">
+                    업로드한 자료는 아래에서 선택한 후 전송됩니다. 원문을 자르지
+                    않으며 요청 한도는{" "}
+                    {Math.round((p?.maxRequestBytes ?? 262144) / 1024)}{" "}
+                    KiB입니다.
+                  </p>
+                  {w.inputIds
+                    .filter(
+                      (id) =>
+                        staff || artifact(id)?.createdBy === s.session.userId,
+                    )
+                    .map((id) => (
+                      <label className="check-row" key={id}>
+                        <input
+                          type="checkbox"
+                          disabled={w.status === "done"}
+                          checked={(t.selectedInputIds ?? w.inputIds).includes(
+                            id,
+                          )}
+                          onChange={async (e) => {
+                            await dispatch({
+                              type: "thread.inputs",
+                              threadId: t.id,
+                              fileIds: e.target.checked
+                                ? [...(t.selectedInputIds ?? w.inputIds), id]
+                                : (t.selectedInputIds ?? w.inputIds).filter(
+                                    (x) => x !== id,
+                                  ),
+                            });
+                          }}
+                        />
+                        {artifact(id)?.name} · v{artifact(id)?.version}
+                      </label>
+                    ))}
+                </details>
                 {bundles.length > 0 && (
                   <div className="context-chips">
                     {bundles.map((b) => (
@@ -627,8 +772,8 @@ export function Workspace({
                         </button>
                         <button
                           aria-label="활성 컨텍스트 제거"
-                          onClick={() =>
-                            dispatch({
+                          onClick={async () =>
+                            await dispatch({
                               type: "context.detach",
                               threadId: t.id,
                               bundleId: b.id,
@@ -679,10 +824,11 @@ export function Workspace({
                     className="primary"
                     disabled={
                       !text.trim() ||
-                      busy ||
+                      (busy && !discussion) ||
+                      w.status === "done" ||
                       (!discussion && a.connectionMode === "external")
                     }
-                    onClick={send}
+                    onClick={() => void send()}
                   >
                     <Send size={15} />
                     {discussion ? "의견 남기기" : "assistant 호출"}
@@ -732,9 +878,10 @@ export function Workspace({
                 <label className="check-row" key={c.id}>
                   <input
                     type="checkbox"
+                    disabled={w.status === "done"}
                     checked={c.done}
-                    onChange={(e) =>
-                      dispatch({
+                    onChange={async (e) =>
+                      await dispatch({
                         type: "work.check",
                         workId: w.id,
                         checkId: c.id,
@@ -747,10 +894,14 @@ export function Workspace({
               ))}
               <button
                 className="text-btn"
-                onClick={() => {
+                onClick={async () => {
                   const label = window.prompt("달성 기준");
                   if (label)
-                    dispatch({ type: "work.check.add", workId: w.id, label });
+                    await dispatch({
+                      type: "work.check.add",
+                      workId: w.id,
+                      label,
+                    });
                 }}
               >
                 + 항목 추가
@@ -758,6 +909,12 @@ export function Workspace({
             </section>
             <section>
               <h3>업무 메모</h3>
+              {w.status === "done" && (
+                <p className="small muted">
+                  추가 메모는 완료 후 기록으로 남으며 완료 당시 자료는 변경하지
+                  않습니다.
+                </p>
+              )}
               {w.notes.map((n) => (
                 <div className="note" key={n.id}>
                   <p>{n.text}</p>
@@ -774,8 +931,14 @@ export function Workspace({
               />
               <button
                 disabled={!note.trim()}
-                onClick={() => {
-                  if (dispatch({ type: "work.note", workId: w.id, text: note }))
+                onClick={async () => {
+                  if (
+                    await dispatch({
+                      type: "work.note",
+                      workId: w.id,
+                      text: note,
+                    })
+                  )
                     setNote("");
                 }}
               >
@@ -783,6 +946,37 @@ export function Workspace({
               </button>
             </section>
             <section>
+              <h3>완료 기록</h3>
+              {(s.completions ?? [])
+                .filter((c) => c.workId === w.id)
+                .map((c) => (
+                  <details key={c.id}>
+                    <summary>
+                      {new Date(c.at).toLocaleString()} ·{" "}
+                      {c.legacy ? "이관 시점 스냅샷" : "업무 완료"}
+                    </summary>
+                    <p>
+                      {c.reason || "완료 기준 충족"} · {actor(c.actor)}
+                    </p>
+                    <p>
+                      체크리스트 {c.work.checks.filter((x) => x.done).length}/
+                      {c.work.checks.length} · 입력 {c.work.inputIds.length} ·
+                      산출물 {c.work.outputIds.length}
+                    </p>
+                    <button
+                      onClick={() =>
+                        saveDownload(
+                          new Blob([JSON.stringify(c, null, 2)], {
+                            type: "application/json",
+                          }),
+                          "completion-" + c.id + ".json",
+                        )
+                      }
+                    >
+                      완료 기록 다운로드
+                    </button>
+                  </details>
+                ))}
               <h3>연결된 업무</h3>
               {s.handoffs
                 .filter(
@@ -810,8 +1004,8 @@ export function Workspace({
                       </small>
                       {h.active && (
                         <button
-                          onClick={() =>
-                            dispatch({
+                          onClick={async () =>
+                            await dispatch({
                               type: "handoff.detach",
                               handoffId: h.id,
                             })
@@ -928,8 +1122,8 @@ export function Workspace({
                 <input
                   type="checkbox"
                   checked={t.srIds.includes(r.id)}
-                  onChange={(e) =>
-                    dispatch({
+                  onChange={async (e) =>
+                    await dispatch({
                       type: "thread.sr",
                       threadId: t.id,
                       srIds: e.target.checked
@@ -944,104 +1138,7 @@ export function Workspace({
         </Modal>
       )}
       {editing && (
-        <Modal title="업무 설정" onClose={() => setEditing(false)}>
-          <label className="field">
-            업무명
-            <input
-              value={w.title}
-              onChange={(e) =>
-                dispatch({
-                  type: "work.edit",
-                  workId: w.id,
-                  title: e.target.value,
-                })
-              }
-            />
-          </label>
-          <label className="field">
-            설명
-            <textarea
-              value={w.description}
-              onChange={(e) =>
-                dispatch({
-                  type: "work.edit",
-                  workId: w.id,
-                  description: e.target.value,
-                })
-              }
-            />
-          </label>
-          <label className="field">
-            담당자
-            <select
-              value={w.owner}
-              onChange={(e) =>
-                dispatch({
-                  type: "work.edit",
-                  workId: w.id,
-                  owner: e.target.value,
-                })
-              }
-            >
-              {s.users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            외부 업무 URL
-            <input
-              value={w.externalUrl}
-              onChange={(e) =>
-                dispatch({
-                  type: "work.edit",
-                  workId: w.id,
-                  externalUrl: e.target.value,
-                })
-              }
-            />
-          </label>
-          {w.externalUrl.startsWith("http") && (
-            <a
-              className="btn"
-              href={w.externalUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              외부 업무 열기 ↗
-            </a>
-          )}
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={w.manual}
-              onChange={(e) =>
-                dispatch({
-                  type: "work.edit",
-                  workId: w.id,
-                  manual: e.target.checked,
-                })
-              }
-            />
-            수동 진행
-          </label>
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={w.archived}
-              onChange={(e) =>
-                dispatch({
-                  type: "work.edit",
-                  workId: w.id,
-                  archived: e.target.checked,
-                })
-              }
-            />
-            업무 보관 (기록은 유지)
-          </label>
-        </Modal>
+        <WorkSettingsDialog work={w} onClose={() => setEditing(false)} />
       )}
       {share && (
         <Modal title="요청자에게 결과 공유" onClose={() => setShare(false)}>
@@ -1080,9 +1177,9 @@ export function Workspace({
           <button
             className="primary"
             disabled={!shareSr || (!shareText.trim() && !shareFiles.length)}
-            onClick={() => {
+            onClick={async () => {
               if (
-                dispatch({
+                await dispatch({
                   type: "sr.share",
                   srId: shareSr,
                   workId: w.id,

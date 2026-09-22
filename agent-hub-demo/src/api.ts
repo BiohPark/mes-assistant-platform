@@ -17,12 +17,15 @@ export function buildRequest(s: HubState, threadId: string, prompt: string) {
       )
       .join("\n\n");
   const requester = s.session.role === "requester";
+  const selectedInputs = (t.selectedInputIds ?? w.inputIds).filter((id) =>
+    w.inputIds.includes(id),
+  );
   const inputIds = requester
-    ? w.inputIds.filter(
+    ? selectedInputs.filter(
         (id) =>
           s.artifacts.find((f) => f.id === id)?.createdBy === s.session.userId,
       )
-    : w.inputIds;
+    : selectedInputs;
   const contexts = (requester ? [] : t.activeBundleIds)
     .map((id) => s.bundles.find((b) => b.id === id))
     .filter(Boolean)

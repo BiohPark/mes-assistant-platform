@@ -1,3 +1,4 @@
+import { BackupPanel } from "./BackupPanel";
 import { useState } from "react";
 import { Plus, Save, Download, Trash2, Upload, Settings2 } from "lucide-react";
 import { useHub } from "./store";
@@ -79,6 +80,7 @@ export function AgentAdmin() {
           <Plus size={17} /> 에이전트 추가
         </button>
       </div>
+      <BackupPanel />
       <div className="admin-layout">
         <section>
           <div className="toolbar">
@@ -183,10 +185,10 @@ export function AgentAdmin() {
         >
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
               if (
-                dispatch({
+                await dispatch({
                   type: "agent.save",
                   agent: {
                     ...draft,
@@ -438,10 +440,10 @@ export function AgentAdmin() {
         <Modal title="AI 연결 프로필" onClose={() => setProfile(undefined)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
               if (
-                dispatch({
+                await dispatch({
                   type: "profile.save",
                   profile: {
                     ...profile,
@@ -500,6 +502,18 @@ export function AgentAdmin() {
                 />
               </label>
             </div>
+            <label className="field">
+              요청 본문 한도 (KiB) · 토큰 한도와 별개
+              <input
+                type="number"
+                min="1"
+                max="16384"
+                value={(profile.maxRequestBytes ?? 262144) / 1024}
+                onChange={(e) =>
+                  pupdate("maxRequestBytes", Number(e.target.value) * 1024)
+                }
+              />
+            </label>
             <label className="field">
               API 키 · 메모리에만 유지
               <input

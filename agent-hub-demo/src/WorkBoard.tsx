@@ -57,14 +57,19 @@ export function WorkBoard({ agentId }: { agentId: string }) {
             ),
         )),
   );
-  function statusChange(work: WorkItem, status: WorkStatus) {
+  async function statusChange(work: WorkItem, status: WorkStatus) {
     if (status === work.status) return;
     if (work.status === "done" || status === "done") {
       setChange({ work, status });
       setReason("");
       return;
     }
-    dispatch({ type: "work.status", workId: work.id, status, reason: "" });
+    await dispatch({
+      type: "work.status",
+      workId: work.id,
+      status,
+      reason: "",
+    });
   }
   function renderWork(w: WorkItem) {
     const threads = state.threads.filter((t) => t.workId === w.id),
@@ -308,11 +313,11 @@ export function WorkBoard({ agentId }: { agentId: string }) {
         <Modal title="새 업무 만들기" onClose={() => setCreate(false)}>
           <form
             className="stack"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
               const id = crypto.randomUUID();
               if (
-                dispatch({
+                await dispatch({
                   type: "work.create",
                   agentId,
                   title,
@@ -404,9 +409,9 @@ export function WorkBoard({ agentId }: { agentId: string }) {
                   change.work.checks.some((c) => !c.done)) &&
                 !reason.trim()
               }
-              onClick={() => {
+              onClick={async () => {
                 if (
-                  dispatch({
+                  await dispatch({
                     type: "work.status",
                     workId: change.work.id,
                     status: change.status,

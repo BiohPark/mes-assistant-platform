@@ -1,6 +1,7 @@
 export type Role = "staff" | "requester" | "admin";
 export type User = { id: string; name: string; team: string };
 export type Agent = {
+  revision?: number;
   id: string;
   name: string;
   lv1: string;
@@ -20,6 +21,8 @@ export type Agent = {
   color: string;
 };
 export type ConnectionProfile = {
+  revision?: number;
+  maxRequestBytes?: number;
   id: string;
   name: string;
   mode: "demo" | "api";
@@ -32,6 +35,7 @@ export type ConnectionProfile = {
 };
 export type WorkStatus = "waiting" | "active" | "review" | "done";
 export type WorkItem = {
+  revision?: number;
   id: string;
   agentId: string;
   title: string;
@@ -51,6 +55,7 @@ export type WorkItem = {
   activeThreadId: string;
 };
 export type Conversation = {
+  selectedInputIds?: string[];
   id: string;
   workId: string;
   title: string;
@@ -60,6 +65,8 @@ export type Conversation = {
   activeBundleIds: string[];
 };
 export type Message = {
+  sequence?: number;
+  requestId?: string;
   id: string;
   threadId: string;
   role: "user" | "assistant";
@@ -137,6 +144,14 @@ export type ServiceRequest = {
   results: SharedResult[];
 };
 export type Activity = {
+  transition?: {
+    from: WorkStatus;
+    to: WorkStatus;
+    reason: string;
+    owner: string;
+    agentId: string;
+    completionId?: string;
+  };
   id: string;
   workId: string;
   actor: string;
@@ -154,6 +169,8 @@ export type Notification = {
   read: boolean;
 };
 export type HubState = {
+  requestRecords?: RequestRecord[];
+  completions?: CompletionSnapshot[];
   version: 1;
   users: User[];
   session: { userId: string; role: Role };
@@ -169,6 +186,47 @@ export type HubState = {
   activities: Activity[];
   notifications: Notification[];
 };
+export type RequestRecord = {
+  id: string;
+  threadId: string;
+  workId: string;
+  actorId: string;
+  role: Role;
+  tabId: string;
+  status:
+    | "pending"
+    | "streaming"
+    | "succeeded"
+    | "failed"
+    | "cancelled"
+    | "interrupted";
+  createdAt: string;
+  finishedAt?: string;
+  requestedModel: string;
+  actualModel?: string;
+  source: "demo" | "api";
+  contextIds: string[];
+  fileIds: string[];
+  userMessageId: string;
+  snapshot: {
+    model: string;
+    messages: { role: string; contentId: string; name?: string }[];
+    stream: false;
+  };
+  leaseToken: string;
+  leaseUntil: number;
+  error?: string;
+  retryOf?: string;
+};
+export type CompletionSnapshot = {
+  id: string;
+  workId: string;
+  at: string;
+  actor: string;
+  reason: string;
+  legacy: boolean;
+  work: WorkItem;
+};
 export type Action =
   | { type: "session"; userId: string; role: Role }
   | { type: "agent.save"; agent: Agent }
@@ -179,10 +237,12 @@ export type Action =
       title: string;
       owner: string;
       manual?: boolean;
+      archived?: boolean;
       id?: string;
     }
   | {
       type: "work.edit";
+      expectedRevision?: number;
       workId: string;
       title?: string;
       description?: string;
@@ -212,6 +272,8 @@ export type Action =
       kind: "input" | "output";
     }
   | { type: "bundle.save"; bundle: ContextBundle }
+  | { type: "context.import"; threadId: string; bundle: ContextBundle }
+  | { type: "thread.inputs"; threadId: string; fileIds: string[] }
   | { type: "context.attach"; threadId: string; bundleId: string }
   | { type: "context.detach"; threadId: string; bundleId: string }
   | {

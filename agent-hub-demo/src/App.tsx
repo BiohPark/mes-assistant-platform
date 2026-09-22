@@ -18,7 +18,9 @@ import { Workspace } from "./Workspace";
 import { Modal } from "./ui";
 import { uid } from "./domain";
 import { downloadArtifact, saveDownload } from "./files";
-import { callAssistant } from "./api";
+import { hubDB, readState } from "./db/schema";
+import { startRequest, runRequest } from "./app/requestService";
+import { tabId } from "./app/session";
 function Requests({ intake = false }: { intake?: boolean }) {
   const { state: s, dispatch, notify } = useHub();
   const [title, setTitle] = useState("");
@@ -63,9 +65,9 @@ function Requests({ intake = false }: { intake?: boolean }) {
               <button
                 className="primary"
                 disabled={!title.trim() || !a}
-                onClick={() => {
+                onClick={async () => {
                   const id = uid();
-                  if (dispatch({ type: "sr.start", title, id })) {
+                  if (await dispatch({ type: "sr.start", title, id })) {
                     setActive(id);
                     setTitle("");
                   }
@@ -116,8 +118,8 @@ function Requests({ intake = false }: { intake?: boolean }) {
                 {r.status === "draft" && (
                   <button
                     className="primary"
-                    onClick={() => {
-                      if (dispatch({ type: "sr.submit", srId: r.id }))
+                    onClick={async () => {
+                      if (await dispatch({ type: "sr.submit", srId: r.id }))
                         notify("SR 접수가 완료되었습니다.");
                     }}
                   >
@@ -133,8 +135,8 @@ function Requests({ intake = false }: { intake?: boolean }) {
                   접수 상태
                   <select
                     value={r.status}
-                    onChange={(e) =>
-                      dispatch({
+                    onChange={async (e) =>
+                      await dispatch({
                         type: "sr.status",
                         srId: r.id,
                         status: e.target.value as
@@ -321,7 +323,7 @@ function Reports() {
   );
 }
 export function App() {
-  const { state: s, dispatch, notify, apiKeys } = useHub();
+  const { state: s, dispatch, notify, apiKeys, epoch } = useHub();
   const [hash, setHash] = useState(location.hash || "#/");
   const [notifications, setNotifications] = useState(false);
   const [helper, setHelper] = useState(false);
@@ -364,7 +366,11 @@ export function App() {
         s.threads.some((t) => t.id === thread && t.workId === parts[1]) &&
         s.works.find((w) => w.id === parts[1])?.activeThreadId !== thread
       )
-        dispatch({ type: "thread.select", workId: parts[1], threadId: thread });
+        void dispatch({
+          type: "thread.select",
+          workId: parts[1],
+          threadId: thread,
+        });
     }
   }, [hash]);
   return (
@@ -384,9 +390,9 @@ export function App() {
           <select
             aria-label="사용자 역할 전환"
             value={s.session.role}
-            onChange={(e) => {
+            onChange={async (e) => {
               const role = e.target.value as "admin" | "staff" | "requester";
-              dispatch({ type: "session", role, userId: role });
+              await dispatch({ type: "session", role, userId: role });
               location.hash = role === "requester" ? "#/requests" : "#/";
             }}
           >
@@ -428,7 +434,8 @@ export function App() {
             <p>
               역할 전환은 화면 시연입니다.
               <br />
-              실제 인증·PC 간 동기화는 제공하지 않습니다.
+              실제 인증·PC 간 동기화는 제공하지 않습니다. 저장소 v2로 이관한
+              뒤에는 구버전 앱에서 같은 자료를 편집하지 마세요.
             </p>
           </div>
         </nav>
@@ -467,8 +474,8 @@ export function App() {
               <button
                 className={"notification " + (!n.read ? "unread" : "")}
                 key={n.id}
-                onClick={() => {
-                  dispatch({ type: "notification.read", id: n.id });
+                onClick={async () => {
+                  await dispatch({ type: "notification.read", id: n.id });
                   location.hash = n.link;
                   setNotifications(false);
                 }}
@@ -490,7 +497,7 @@ export function App() {
         >
           <p className="muted">
             담당 에이전트의 연결 설정으로 업무 초안을 정리합니다. 검토 후
-            생성하세요.
+            생성하세요. 초안 요청 이력은 해당 에이전트의 보관 업무에 남습니다.
           </p>
           <select
             value={helperAgent}
@@ -519,31 +526,42 @@ export function App() {
               setHelperBusy(true);
               try {
                 const a = s.agents.find((a) => a.id === helperAgent)!;
-                const wid = uid(),
-                  tid = uid();
-                const temp = {
-                  ...s,
-                  works: [
-                    ...s.works,
-                    { id: wid, agentId: a.id, inputIds: [] } as any,
-                  ],
-                  threads: [
-                    ...s.threads,
-                    {
-                      id: tid,
-                      workId: wid,
-                      model: "",
-                      activeBundleIds: [],
-                    } as any,
-                  ],
-                };
-                const response = await callAssistant(
-                  temp,
-                  tid,
+                const wid = uid();
+                if (
+                  !(await dispatch({
+                    type: "work.create",
+                    agentId: a.id,
+                    title: "시스템 초안 기록 · " + new Date().toLocaleString(),
+                    owner: s.session.userId,
+                    id: wid,
+                    archived: true,
+                  }))
+                )
+                  return;
+                const current = await readState(hubDB, s.session);
+                const work = current.works.find((w) => w.id === wid)!;
+                const prepared = await startRequest(
+                  hubDB,
+                  work.activeThreadId,
                   "다음 업무의 목적과 확인할 사항을 간결하게 정리하세요: " +
                     helperText,
-                  apiKeys[a.profileId] || "",
+                  {
+                    actorId: s.session.userId,
+                    role: s.session.role,
+                    tabId,
+                    commandId: uid(),
+                    epoch,
+                  },
                 );
+                const response = await runRequest(
+                  hubDB,
+                  prepared,
+                  apiKeys[prepared.profile.id] || "",
+                );
+                if (!response)
+                  throw Error(
+                    "초안 요청이 실패하거나 중지되었습니다. 보관된 초안 기록에서 확인할 수 있습니다.",
+                  );
                 setHelperResult(response.content);
               } catch (e) {
                 notify(String(e));
@@ -563,10 +581,10 @@ export function App() {
           <button
             className="primary"
             disabled={!helperAgent || !helperText.trim()}
-            onClick={() => {
+            onClick={async () => {
               const id = uid();
               if (
-                dispatch({
+                await dispatch({
                   type: "work.create",
                   agentId: helperAgent,
                   title: helperText.slice(0, 100),
@@ -575,7 +593,7 @@ export function App() {
                 })
               ) {
                 if (helperResult)
-                  dispatch({
+                  await dispatch({
                     type: "work.note",
                     workId: id,
                     text: helperResult,
