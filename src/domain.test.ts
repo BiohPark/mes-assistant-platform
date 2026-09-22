@@ -1,184 +1,324 @@
 import { describe, it, expect } from "vitest";
-import { transitionWork, getProgress, mergeStageStructure } from "./domain";
-import type { Work, Stage } from "./types";
-const stage = (id: string, status: Stage["status"], done = true): Stage => ({
-  id,
-  name: id,
-  short: id,
-  mode: "assistant",
-  assistant: "FDS",
-  status,
-  inputs: [],
-  outputs: [],
-  checklist: [{ id: "check", label: "review", done }],
-  messages: [],
-  notes: [],
+import { seed } from "./seed";
+import { reduce, modelFor, canSeeWork, visibleMessages } from "./domain";
+import type { ContextBundle } from "./types";
+const bundle = (s: ReturnType<typeof seed>): ContextBundle => ({
+  id: "bundle-test",
+  name: "선택한 요구사항",
+  sourceWorkId: s.works[0].id,
+  createdBy: "staff",
+  createdAt: new Date().toISOString(),
+  excerpts: [],
+  artifactIds: [...s.works[0].inputIds],
+  summary: "요약",
+  note: "선택 전달",
 });
-const fixture = (): Work => ({
-  id: "w",
-  title: "ET",
-  description: "",
-  system: "ET",
-  owner: "Kim",
-  priority: "보통",
-  due: "2026-09-20",
-  externalId: "CR-1",
-  template: "ET",
-  createdAt: "2026-09-16",
-  stages: [
-    {
-      ...stage("urs", "active"),
-      outputs: ["a", "b"],
-      messages: [
-        {
-          id: "m",
-          role: "user",
-          content: "Keep me",
-          actor: "Kim",
-          at: "2026-09-16",
+describe("Agent Hub independent work invariants", () => {
+  it("keeps staff replies private and requires requester provenance on asynchronous replies", () => {
+    let s = seed();
+    const base = s.messages[0];
+    s = reduce(s, {
+      type: "message.add",
+      message: {
+        ...base,
+        id: "private-answer",
+        actor: "urs",
+        role: "assistant",
+        kind: "reply",
+        source: "demo",
+        content: "STAFF ONLY",
+      },
+    });
+    s = reduce(s, { type: "session", userId: "requester", role: "requester" });
+    expect(
+      visibleMessages(s, "urs-work-thread").some(
+        (m) => m.content === "STAFF ONLY",
+      ),
+    ).toBe(false);
+    expect(() =>
+      reduce(s, {
+        type: "message.add",
+        message: {
+          ...base,
+          id: "delayed-answer",
+          actor: "urs",
+          role: "assistant",
+          kind: "reply",
+          source: "demo",
+          content: "OLD STAFF REQUEST",
         },
-      ],
-    },
-    stage("fds", "pending"),
-    stage("dev", "pending"),
-  ],
-});
-describe("workflow transitions", () => {
-  it('blocks a reordered review from creating a second active stage',()=>{
-    const w=fixture();w.stages[0].status='review';w.stages[1].status='review';w.stages[2].status='active';
-    expect(()=>transitionWork(w,'urs','next','fds',[],'')).toThrow(/진행 중/);
-  });
-  it('reopens a completed single task with a reason and preserves records',()=>{
-    const w=fixture();w.stages=[w.stages[0]];w.stages[0].status='done';
-    expect(()=>transitionWork(w,'urs','reopen','urs',[],'')).toThrow(/사유/);
-    const n=transitionWork(w,'urs','reopen','urs',[],'검토 조건 변경');
-    expect(n.stages[0].status).toBe('active');expect(n.stages[0].checklist.every(c=>!c.done)).toBe(true);
-    expect(n.stages[0].messages).toEqual(w.stages[0].messages);expect(n.stages[0].outputs).toEqual(w.stages[0].outputs);
-  });
-  it('blocks advancing a later review while an earlier task is active', () => {
-    const w=fixture();w.stages[1].status='review';w.stages[1].checklist.forEach(c=>c.done=true);
-    expect(()=>transitionWork(w,'fds','next','dev',[],'')).toThrow(/이전/);
-    expect(()=>transitionWork(w,'fds','skip','dev',[],'later')).toThrow(/이전/);
-  });
-  it('does not reactivate a completed successor when advancing after reordering', () => {
-    const w=fixture();w.stages[1].status='done';
-    expect(()=>transitionWork(w,'urs','next','fds',[],'')).toThrow(/완료/);
-  });
-  it("blocks advancement while required checks are incomplete", () => {
-    const w = fixture();
-    w.stages[0].checklist[0].done = false;
-    expect(() => transitionWork(w, "urs", "next", "fds", ["a"], "")).toThrow(
-      /체크리스트/,
-    );
-  });
-  it("transfers only selected output references and preserves source and conversation", () => {
-    const w = fixture();
-    const n = transitionWork(w, "urs", "next", "fds", ["b"], "");
-    expect(n.stages[1].inputs).toEqual(["b"]);
-    expect(n.stages[0].status).toBe("done");
-    expect(n.stages[1].status).toBe("active");
-    expect(n.stages[0].outputs).toEqual(["a", "b"]);
-    expect(n.stages[0].messages[0].content).toBe("Keep me");
-    expect(w.stages[0].status).toBe("active");
-  });
-  it("rejects file references outside the source outputs", () =>
-    expect(() =>
-      transitionWork(fixture(), "urs", "next", "fds", ["unknown"], ""),
-    ).toThrow(/산출물/));
-  it("requires an explanation for skipping", () =>
-    expect(() =>
-      transitionWork(fixture(), "urs", "skip", "fds", [], " "),
-    ).toThrow(/사유/));
-  it("marks a skipped stage and activates its target even with unchecked items", () => {
-    const w = fixture();
-    w.stages[0].checklist[0].done = false;
-    const n = transitionWork(
-      w,
-      "urs",
-      "skip",
-      "fds",
-      [],
-      "기존 승인 문서 사용",
-    );
-    expect(n.stages[0].status).toBe("skipped");
-    expect(n.stages[1].status).toBe("active");
-  });
-  it("reopens a prior stage and flags downstream completed work without erasing sessions", () => {
-    const w = fixture();
-    w.stages[0].status = "done";
-    w.stages[1].status = "done";
-    w.stages[2].status = "active";
-    const n = transitionWork(w, "dev", "back", "urs", [], "요구사항 수정");
-    expect(n.stages.map((s) => s.status)).toEqual([
-      "active",
-      "review",
-      "review",
-    ]);
-    expect(n.stages[0].messages).toHaveLength(1);
-    expect(n.stages[0].checklist[0].done).toBe(false);
-  });
-  it("rejects a forward target for a back transition", () =>
-    expect(() =>
-      transitionWork(fixture(), "urs", "back", "fds", [], "수정"),
-    ).toThrow(/이전/));
-  it("does not allow ordinary advancement to jump over an intermediate stage", () =>
-    expect(() =>
-      transitionWork(fixture(), "urs", "next", "dev", [], ""),
-    ).toThrow(/다음/));
-  it("counts completed and skipped stages without treating review as completed", () => {
-    const w = fixture();
-    w.stages[0].status = "done";
-    w.stages[1].status = "skipped";
-    w.stages[2].status = "review";
-    expect(getProgress(w)).toBe(67);
-  });
-  it("blocks final completion if earlier stages still need review", () => {
-    const w = fixture();
-    w.stages[0].status = "done";
-    w.stages[1].status = "review";
-    w.stages[2].status = "active";
-    expect(() => transitionWork(w, "dev", "next", "", [], "")).toThrow(
-      /미완료/,
-    );
-  });
-  it("completes the final stage when every earlier stage is resolved", () => {
-    const w = fixture();
-    w.stages[0].status = "done";
-    w.stages[1].status = "skipped";
-    w.stages[2].status = "active";
-    const n = transitionWork(w, "dev", "next", "", [], "");
-    expect(getProgress(n)).toBe(100);
-  });
-  it("rejects rewinding from a pending stage without duplicating the active stage", () =>
-    expect(() =>
-      transitionWork(fixture(), "dev", "back", "fds", [], "수정"),
-    ).toThrow(/대기/));
-  it("merges structural edits while preserving messages and file refs saved after the editor opened", () => {
-    const w = fixture();
-    const proposed = structuredClone(w.stages);
-    proposed[0].name = "새 이름";
-    w.stages[0].messages.push({
-      id: "late",
-      role: "assistant",
-      content: "new response",
-      actor: "assistant",
-      at: "2026-09-16",
+      }),
+    ).toThrow();
+    s = reduce(s, {
+      type: "message.add",
+      message: {
+        ...base,
+        id: "own-answer",
+        actor: "urs",
+        role: "assistant",
+        kind: "reply",
+        source: "demo",
+        content: "REQUESTER REPLY",
+        visibleToRequester: "requester",
+      },
     });
-    w.stages[0].outputs.push("late-file");
-    const stages = mergeStageStructure(w, proposed);
-    expect(stages[0].name).toBe("새 이름");
-    expect(stages[0].messages).toHaveLength(2);
-    expect(stages[0].outputs).toContain("late-file");
+    expect(
+      visibleMessages(s, "urs-work-thread").some((m) => m.id === "own-answer"),
+    ).toBe(true);
   });
-  it("blocks deletion if a previously empty stage received work while editing", () => {
-    const w = fixture();
-    const proposed = w.stages.slice(0, 2);
-    w.stages[2].notes.push({
-      id: "late",
-      text: "new note",
-      actor: "Kim",
-      at: "2026-09-16",
+  it("rejects existing retired handoff destinations atomically and preserves version snapshots", () => {
+    let s = seed();
+    const b = bundle(s);
+    const before = structuredClone(s);
+    expect(() =>
+      reduce(s, {
+        type: "handoff",
+        bundle: b,
+        targetWorkId: "legacy-work",
+        srIds: [],
+      }),
+    ).toThrow();
+    expect(s).toEqual(before);
+    s = reduce(s, {
+      type: "handoff",
+      bundle: b,
+      targetWorkId: "fds-work",
+      srIds: [],
     });
-    expect(() => mergeStageStructure(w, proposed)).toThrow(/기록/);
+    const old = s.artifacts[0];
+    s = reduce(s, {
+      type: "artifact.add",
+      kind: "input",
+      artifact: {
+        ...old,
+        id: "requirements-v2",
+        version: 2,
+        previousId: old.id,
+        content: "NEW VERSION",
+      },
+    });
+    expect(s.bundles.at(-1)?.artifactIds).toEqual([old.id]);
+    expect(s.artifacts.find((f) => f.id === old.id)?.content).toBe(old.content);
+    expect(() =>
+      reduce(s, {
+        type: "artifact.add",
+        kind: "input",
+        artifact: { ...old, content: "OVERWRITE" },
+      }),
+    ).toThrow();
+  });
+  it("blocks requester access to internal sibling threads and output creation", () => {
+    let s = reduce(seed(), {
+      type: "thread.create",
+      workId: "urs-work",
+      title: "내부 검토",
+      id: "private-thread",
+    });
+    s = reduce(s, { type: "session", userId: "requester", role: "requester" });
+    expect(() =>
+      reduce(s, {
+        type: "thread.model",
+        threadId: "private-thread",
+        model: "private",
+      }),
+    ).toThrow();
+    expect(() =>
+      reduce(s, { type: "thread.create", workId: "urs-work", title: "우회" }),
+    ).toThrow();
+    expect(() =>
+      reduce(s, {
+        type: "artifact.add",
+        kind: "output",
+        artifact: {
+          id: "unauthorized",
+          workId: "urs-work",
+          name: "result",
+          mime: "text/plain",
+          size: 1,
+          version: 1,
+          content: "x",
+          createdBy: "requester",
+          createdAt: new Date().toISOString(),
+        },
+      }),
+    ).toThrow();
+  });
+  it("can forward a received snapshot from independent target even after source archive", () => {
+    let s = seed();
+    const b = bundle(s);
+    const m = s.messages[0];
+    b.excerpts = [
+      {
+        messageId: m.id,
+        threadId: m.threadId,
+        actor: m.actor,
+        content: m.content,
+        at: m.at,
+      },
+    ];
+    s = reduce(s, {
+      type: "handoff",
+      bundle: b,
+      targetAgentId: "fds",
+      newWorkId: "middle",
+      title: "중간",
+      owner: "staff",
+      srIds: [],
+    });
+    s = reduce(s, {
+      type: "work.edit",
+      workId: b.sourceWorkId,
+      archived: true,
+    });
+    const next = { ...b, id: "forwarded", sourceWorkId: "middle" };
+    s = reduce(s, {
+      type: "handoff",
+      bundle: next,
+      targetAgentId: "test",
+      newWorkId: "last",
+      title: "검증",
+      owner: "staff",
+      srIds: [],
+    });
+    expect(s.bundles.at(-1)?.excerpts).toEqual(b.excerpts);
+  });
+  it("creates an independent target and retains immutable context after source archive and detach", () => {
+    let s = seed();
+    const source = s.works[0];
+    const b = bundle(s);
+    s = reduce(s, {
+      type: "handoff",
+      bundle: b,
+      targetAgentId: "fds",
+      newWorkId: "target",
+      title: "FDS 신규 업무",
+      owner: "staff",
+      srIds: [],
+    });
+    expect(s.works.find((w) => w.id === "target")?.status).toBe("waiting");
+    expect(s.works.find((w) => w.id === source.id)?.status).toBe(source.status);
+    expect(s.works.find((w) => w.id === source.id)?.checks).toEqual(
+      source.checks,
+    );
+    b.summary = "mutated outside reducer";
+    expect(s.bundles.at(-1)?.summary).toBe("요약");
+    s = reduce(s, { type: "work.edit", workId: source.id, archived: true });
+    s = reduce(s, { type: "handoff.detach", handoffId: s.handoffs.at(-1)!.id });
+    expect(s.bundles.at(-1)?.artifactIds).toEqual(source.inputIds);
+    expect(
+      s.threads.find((t) => t.workId === "target")?.activeBundleIds,
+    ).toEqual([]);
+    expect(s.handoffs.at(-1)?.active).toBe(false);
+  });
+  it("requires reasons for unfinished completion and reopening without losing history", () => {
+    let s = seed();
+    const w = s.works[0];
+    expect(() =>
+      reduce(s, {
+        type: "work.status",
+        workId: w.id,
+        status: "done",
+        reason: "",
+      }),
+    ).toThrow();
+    s = reduce(s, {
+      type: "work.status",
+      workId: w.id,
+      status: "done",
+      reason: "데모 검토 완료",
+    });
+    expect(() =>
+      reduce(s, {
+        type: "work.status",
+        workId: w.id,
+        status: "active",
+        reason: "",
+      }),
+    ).toThrow();
+    const msgs = s.messages;
+    s = reduce(s, {
+      type: "work.status",
+      workId: w.id,
+      status: "active",
+      reason: "추가 요구사항",
+    });
+    expect(s.messages).toEqual(msgs);
+    expect(s.activities.at(-1)?.action).toBe("업무 재개");
+  });
+  it("submits SR once, tags and notifies; internal tags never grant requester access", () => {
+    let s = reduce(seed(), {
+      type: "session",
+      userId: "requester",
+      role: "requester",
+    });
+    s = reduce(s, {
+      type: "sr.start",
+      title: "설비 신규 등록",
+      id: "new-sr",
+      workId: "intake-new",
+    });
+    s = reduce(s, { type: "sr.submit", srId: "new-sr" });
+    const once = s;
+    expect(s.works.find((w) => w.id === "intake-new")?.status).toBe("waiting");
+    s = reduce(s, { type: "sr.submit", srId: "new-sr" });
+    expect(s.requests).toEqual(once.requests);
+    expect(s.notifications).toEqual(once.notifications);
+    const sr = s.requests.find((r) => r.id === "new-sr")!;
+    expect(s.threads.find((t) => t.id === sr.threadId)?.srIds).toContain(sr.id);
+    expect(canSeeWork(s, "intake-new")).toBe(true);
+    expect(canSeeWork(s, "fds-work")).toBe(false);
+    expect(() =>
+      reduce(s, { type: "work.note", workId: "fds-work", text: "비공개" }),
+    ).toThrow();
+  });
+  it("protects intake retirement, excludes retired targets and honors model precedence", () => {
+    let s = seed();
+    s.session = { userId: "admin", role: "admin" };
+    const intake = s.agents.find((a) => a.intake)!;
+    expect(() =>
+      reduce(s, {
+        type: "agent.save",
+        agent: { ...intake, status: "retired" },
+      }),
+    ).toThrow();
+    expect(() =>
+      reduce(s, {
+        type: "work.create",
+        agentId: "legacy",
+        title: "금지",
+        owner: "staff",
+      }),
+    ).toThrow();
+    const t = s.threads[0];
+    s.agents.find((a) => a.id === s.works[0].agentId)!.defaultModel =
+      "agent-model";
+    expect(modelFor(s, t.id)).toBe("agent-model");
+    s = reduce(s, {
+      type: "thread.model",
+      threadId: t.id,
+      model: "thread-model",
+    });
+    expect(modelFor(s, t.id)).toBe("thread-model");
+  });
+  it("requires explicit result sharing and preserves received artifacts on unlink", () => {
+    let s = seed();
+    const sr = s.requests.find((r) => r.number)!;
+    expect(sr.results).toHaveLength(0);
+    s = reduce(s, {
+      type: "sr.share",
+      srId: sr.id,
+      workId: s.works[0].id,
+      text: "요청 검토 결과",
+      artifactIds: s.works[0].inputIds,
+    });
+    expect(s.requests.find((r) => r.id === sr.id)?.results).toHaveLength(1);
+    const id = s.works[0].inputIds[0];
+    s = reduce(s, {
+      type: "artifact.unlink",
+      workId: s.works[0].id,
+      artifactId: id,
+      kind: "input",
+    });
+    expect(s.artifacts.some((a) => a.id === id)).toBe(true);
   });
 });
