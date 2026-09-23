@@ -24,7 +24,7 @@ it("isolates threads and labels participant text without changing message roles"
       {
         id: "1",
         role: "user",
-        actor: "박비오",
+        actor: "담당자 A",
         content: "검토",
         at: "",
         threadId: "a",
@@ -32,7 +32,7 @@ it("isolates threads and labels participant text without changing message roles"
       {
         id: "2",
         role: "user",
-        actor: "이희준",
+        actor: "담당자 C",
         content: "승인 조건",
         at: "",
         threadId: "b",
@@ -43,7 +43,7 @@ it("isolates threads and labels participant text without changing message roles"
   );
   expect(result).toHaveLength(1);
   expect(result[0].role).toBe("user");
-  expect(result[0].content).toContain("박비오");
+  expect(result[0].content).toContain("담당자 A");
   expect(result[0].content).not.toContain("승인 조건");
   expect(result[0]).not.toHaveProperty("name");
 });

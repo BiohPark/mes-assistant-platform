@@ -27,11 +27,11 @@ export const uid = (): string => {
 };
 export const now = () => new Date().toISOString();
 export const USERS = [
-  "박비오",
-  "노기현",
-  "이희준",
-  "김해윤",
-  "김남우",
+  "담당자 A",
+  "담당자 B",
+  "담당자 C",
+  "담당자 D",
+  "담당자 E",
 ] as const;
 export function transitionWork(
   work: Work,

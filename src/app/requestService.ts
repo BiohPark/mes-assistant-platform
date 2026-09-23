@@ -4,6 +4,7 @@ import type { RequestRecord, ConnectionProfile } from "../types";
 import type { CommandContext } from "../domain/commands";
 import { buildRequest } from "../api";
 import { canSeeThread } from "../domain";
+import { selectedMaterials } from "../hub";
 export type PreparedBody = ReturnType<typeof buildRequest>;
 type Prepared = {
   record: RequestRecord;
@@ -95,12 +96,16 @@ export async function startRequest(
       );
     const id = crypto.randomUUID(),
       at = new Date().toISOString();
-    const fileIds = (t.selectedInputIds ?? w.inputIds).filter(
-      (id) =>
-        w.inputIds.includes(id) &&
-        (ctx.role !== "requester" ||
-          s.artifacts.find((f) => f.id === id)?.createdBy === ctx.actorId),
-    );
+    const fileIds =
+      s.hubVersion === 3
+        ? selectedMaterials(s, w.id).map((f) => f.id)
+        : (t.selectedInputIds ?? w.inputIds).filter(
+            (id) =>
+              w.inputIds.includes(id) &&
+              (ctx.role !== "requester" ||
+                s.artifacts.find((f) => f.id === id)?.createdBy ===
+                  ctx.actorId),
+          );
     const snapshot: RequestRecord["snapshot"] = {
       model: body.model,
       stream: false,

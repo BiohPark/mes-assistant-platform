@@ -1,5 +1,6 @@
 import type { HubState } from "../types";
 import { entityNames } from "./schema";
+import { normalizeTag } from "../hub";
 export function validateState(value: unknown): asserts value is HubState {
   const s = value as HubState;
   if (!s || s.version !== 1)
@@ -83,11 +84,24 @@ export function validateState(value: unknown): asserts value is HubState {
       "leaseToken",
     ],
     completions: ["workId", "at", "actor", "reason"],
+    tags: ["kind", "label", "key", "color"],
+    taskTags: ["workId", "tagId", "at"],
+    taskInputs: ["workId", "artifactId", "at"],
+    catalogOrders: [],
   };
   for (const name of entityNames) {
     const rows =
       s[name] ??
-      (name === "requestRecords" || name === "completions" ? [] : undefined);
+      ([
+        "requestRecords",
+        "completions",
+        "tags",
+        "taskTags",
+        "taskInputs",
+        "catalogOrders",
+      ].includes(name)
+        ? []
+        : undefined);
     if (!Array.isArray(rows)) throw Error(`${name} 목록이 올바르지 않습니다.`);
     const ids = new Set();
     for (const row of rows) {
@@ -115,7 +129,7 @@ export function validateState(value: unknown): asserts value is HubState {
   };
   for (const a of s.agents) {
     id("users", a.owner);
-    member(a.status, ["open", "working", "retired"]);
+    member(a.status, ["open", "working", "testing", "unconfigured", "retired"]);
     member(a.connectionMode, ["api", "external", "hybrid"]);
     if (a.connectionMode !== "external") id("profiles", a.profileId);
     list(a.examples);
@@ -278,4 +292,49 @@ export function validateState(value: unknown): asserts value is HubState {
     for (const file of [...list(c.work.inputIds), ...list(c.work.outputIds)])
       id("artifacts", file);
   }
+  const keys = new Set<string>();
+  for (const t of s.tags ?? []) {
+    member(t.kind, ["sr", "keyword"]);
+    const key = t.kind + ":" + t.key;
+    if (
+      !t.key ||
+      t.key !== normalizeTag(t.label) ||
+      keys.has(key) ||
+      !/^#[a-fA-F0-9]{6}$/.test(t.color)
+    )
+      throw Error("중복 또는 잘못된 태그");
+    keys.add(key);
+  }
+  const relations = new Set<string>();
+  for (const t of s.taskTags ?? []) {
+    id("works", t.workId);
+    id("tags", t.tagId);
+    const key = t.workId + ":" + t.tagId;
+    if (relations.has(key)) throw Error("중복 태그 연결");
+    relations.add(key);
+  }
+  relations.clear();
+  for (const i of s.taskInputs ?? []) {
+    id("works", i.workId);
+    id("artifacts", i.artifactId);
+    const key = i.workId + ":" + i.artifactId;
+    if (relations.has(key) || typeof i.main !== "boolean")
+      throw Error("중복 또는 잘못된 입력 선택");
+    relations.add(key);
+  }
+  for (const c of s.catalogOrders ?? []) {
+    if (
+      !Number.isInteger(c.revision) ||
+      c.revision < 0 ||
+      new Set(list(c.agentIds)).size !== s.agents.length ||
+      c.agentIds.length !== s.agents.length
+    )
+      throw Error("카탈로그 순서 오류");
+    c.agentIds.forEach((x) => id("agents", x));
+  }
+  if (
+    s.hubVersion === 3 &&
+    s.works.some((w) => s.threads.filter((t) => t.workId === w.id).length !== 1)
+  )
+    throw Error("대화와 업무는 1:1이어야 합니다.");
 }

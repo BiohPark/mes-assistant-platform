@@ -1,5 +1,5 @@
 import { BackupPanel } from "./BackupPanel";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Plus, Save, Download, Trash2, Upload, Settings2 } from "lucide-react";
 import { useHub } from "./store";
 import { Avatar, Modal } from "./ui";
@@ -7,10 +7,19 @@ import { putBlob, downloadBlob, getBlob } from "./files";
 import type { Agent, ConnectionProfile } from "./types";
 import { agentStatusLabels } from "./Gallery";
 import "./catalog.css";
-export function AgentAdmin() {
+export function AgentAdmin({
+  initialAgentId,
+  embedded = false,
+  onClose,
+}: { initialAgentId?: string; embedded?: boolean; onClose?: () => void } = {}) {
   const { state, dispatch, notify, apiKeys, setApiKey } = useHub();
   const [query, setQuery] = useState("");
-  const [draft, setDraft] = useState<Agent>();
+  const [draft, setDraft] = useState<Agent | undefined>(() =>
+    state.agents.find((a) => a.id === initialAgentId),
+  );
+  useEffect(() => {
+    if (embedded && !draft) onClose?.();
+  }, [draft, embedded]);
   const [profile, setProfile] = useState<ConnectionProfile>();
   const [uploading, setUploading] = useState(false);
   if (state.session.role !== "admin")
@@ -67,7 +76,7 @@ export function AgentAdmin() {
     }
   }
   return (
-    <div className="page">
+    <div className={embedded ? "embedded-admin" : "page"}>
       <div className="page-head">
         <div>
           <span className="eyebrow">AGENT OPERATIONS</span>

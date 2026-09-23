@@ -4,3 +4,10 @@ dist/
 .vite/
 test-results/
 .npm-cache/
+
+.local-only/
+private-data/
+reference-materials/
+.env
+.env.*
+!.env.example

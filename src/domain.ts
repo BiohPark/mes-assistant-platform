@@ -1,4 +1,5 @@
 import type { Action, HubState, WorkItem, ContextBundle } from "./types";
+import { reduceHub, attachTag, selectedMaterials, workTags } from "./hub";
 export const uid = (): string => crypto.randomUUID();
 export const now = () => new Date().toISOString();
 export const canSeeWork = (s: HubState, id: string) =>
@@ -44,6 +45,8 @@ export function modelFor(s: HubState, id: string) {
   );
 }
 export function reduce(original: HubState, a: Action): HubState {
+  const hubResult = reduceHub(original, a);
+  if (hubResult) return hubResult;
   const s = structuredClone(original),
     actor = s.session.userId,
     at = now();
@@ -142,6 +145,7 @@ export function reduce(original: HubState, a: Action): HubState {
     return new Set([
       ...w.inputIds,
       ...w.outputIds,
+      ...selectedMaterials(s, id).map((f) => f.id),
       ...availableBundles(id).flatMap((b) => b.artifactIds),
     ]);
   };
@@ -221,6 +225,26 @@ export function reduce(original: HubState, a: Action): HubState {
   if (editableId && work(editableId).status === "done")
     throw Error("완료 업무는 사유를 남겨 재개한 후 변경하세요.");
   switch (a.type) {
+    case "sr.register": {
+      const w = work(a.workId);
+      require(s.agents.find((a) => a.id === w.agentId)
+        ?.intake, "접수용 에이전트 대화에서 접수하세요.");
+      const existing = s.requests.find((r) => r.threadId === w.activeThreadId);
+      if (existing) return reduce(s, { type: "sr.submit", srId: existing.id });
+      require(!s.requests.some((r) => r.id === a.id), "중복 SR ID");
+      s.requests.push({
+        id: a.id,
+        workId: w.id,
+        threadId: w.activeThreadId,
+        title: w.title,
+        titleSource: w.titleSource ?? "fallback",
+        requester: actor,
+        status: "draft",
+        createdAt: at,
+        results: [],
+      });
+      return reduce(s, { type: "sr.submit", srId: a.id });
+    }
     case "context.import":
       return reduce(reduce(s, { type: "bundle.save", bundle: a.bundle }), {
         type: "context.attach",
@@ -260,6 +284,13 @@ export function reduce(original: HubState, a: Action): HubState {
       if (a.agent.intake) s.agents.forEach((x) => (x.intake = false));
       s.agents = s.agents.filter((x) => x.id !== a.agent.id);
       s.agents.push(structuredClone(a.agent));
+      if (
+        s.catalogOrders?.[0] &&
+        !s.catalogOrders[0].agentIds.includes(a.agent.id)
+      ) {
+        s.catalogOrders[0].agentIds.push(a.agent.id);
+        s.catalogOrders[0].revision++;
+      }
       break;
     }
     case "profile.save":
@@ -291,6 +322,13 @@ export function reduce(original: HubState, a: Action): HubState {
         if (a[key] !== undefined) Object.assign(w, { [key]: a[key] });
       }
       require(w.title.trim(), "업무명을 입력하세요.");
+      if (a.title !== undefined) {
+        w.titleSource = "manual";
+        for (const r of s.requests.filter((r) => r.workId === w.id)) {
+          r.title = w.title;
+          r.titleSource = "manual";
+        }
+      }
       activity(w.id, "업무 수정");
       break;
     }
@@ -315,6 +353,10 @@ export function reduce(original: HubState, a: Action): HubState {
           actor,
           reason: a.reason,
           legacy: false,
+          inputs: structuredClone(
+            (s.taskInputs ?? []).filter((i) => i.workId === w.id),
+          ),
+          tags: structuredClone(workTags(s, w.id)),
           work: { ...structuredClone(w), status: "done" },
         });
       }
@@ -363,6 +405,10 @@ export function reduce(original: HubState, a: Action): HubState {
     case "thread.create": {
       staff();
       const w = work(a.workId);
+      if (s.hubVersion === 3) {
+        makeWork(w.agentId, a.title || "새 대화", actor, a.id);
+        break;
+      }
       const id = a.id || uid();
       require(!s.threads.some((t) => t.id === id));
       s.threads.push({
@@ -443,7 +489,11 @@ export function reduce(original: HubState, a: Action): HubState {
         require(s.artifacts.some(
           (f) => f.id === a.artifact.previousId && f.workId === w.id,
         ), "이전 버전을 찾을 수 없습니다.");
-      s.artifacts.push(structuredClone(a.artifact));
+      s.artifacts.push({
+        ...structuredClone(a.artifact),
+        role: a.kind,
+        originThreadId: a.artifact.originThreadId ?? w.activeThreadId,
+      });
       w[a.kind === "input" ? "inputIds" : "outputIds"].push(a.artifact.id);
       activity(w.id, "자료 추가", a.artifact.name);
       break;
@@ -570,9 +620,11 @@ export function reduce(original: HubState, a: Action): HubState {
       const t = thread(r!.threadId);
       t.srIds = [...new Set([...t.srIds, r!.id])];
       const w = work(r!.workId);
+      if (s.hubVersion === 3)
+        r!.tagId = attachTag(s, w.id, r!.number!, "sr").id;
       activity(w.id, "SR 접수", r!.number);
       const owner = s.agents.find((a) => a.id === w.agentId)!.owner;
-      for (const u of new Set([r!.requester, owner]))
+      for (const u of new Set([r!.requester, owner, "staff"]))
         notify(
           u,
           "SR 접수 완료",

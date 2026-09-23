@@ -58,7 +58,7 @@ export function createSeed(): AppState {
   const data = [
     [
       "설비 상태 전이 로직 개선",
-      "박비오",
+      "담당자 A",
       "높음",
       1,
       "2026-09-21",
@@ -66,7 +66,7 @@ export function createSeed(): AppState {
     ],
     [
       "CIP 세정 이력 추적 기능 추가",
-      "노기현",
+      "담당자 B",
       "보통",
       3,
       "2026-09-23",
@@ -74,7 +74,7 @@ export function createSeed(): AppState {
     ],
     [
       "설비 사용 전 점검 체크리스트 개편",
-      "이희준",
+      "담당자 C",
       "보통",
       0,
       "2026-09-25",
@@ -82,7 +82,7 @@ export function createSeed(): AppState {
     ],
     [
       "Hold time 초과 알림 기능 개선",
-      "김해윤",
+      "담당자 D",
       "높음",
       4,
       "2026-09-18",
@@ -90,7 +90,7 @@ export function createSeed(): AppState {
     ],
     [
       "교정 주기 관리 화면 개선",
-      "김남우",
+      "담당자 E",
       "보통",
       2,
       "2026-09-28",
@@ -98,7 +98,7 @@ export function createSeed(): AppState {
     ],
     [
       "설비 마스터 데이터 정합성 검증",
-      "박비오",
+      "담당자 A",
       "보통",
       6,
       "2026-09-15",
@@ -106,7 +106,7 @@ export function createSeed(): AppState {
     ],
     [
       "설비 사용 권한 매핑 변경",
-      "노기현",
+      "담당자 B",
       "보통",
       1,
       "2026-09-30",
@@ -114,7 +114,7 @@ export function createSeed(): AppState {
     ],
     [
       "배치별 설비 할당 이력 조회",
-      "이희준",
+      "담당자 C",
       "보통",
       6,
       "2026-09-14",
@@ -164,7 +164,7 @@ export function createSeed(): AppState {
       version: "1.2",
       workId: works[0].id,
       stageId: "w1-s1",
-      createdBy: "노기현",
+      createdBy: "담당자 B",
       createdAt: "2026-09-15T02:20:00Z",
       content:
         "# URS · 설비 상태 전이 로직 개선\n\n문서 상태: 데모용 검토 완료\n버전: 1.2\n\n## URS-001 설비 상태 전이\nIdle → In Use → Dirty → Cleaning → Clean → Idle 순서로 상태를 전이한다.\n\n## URS-002 인터록\n세정 유효기간이 초과한 설비는 사용을 제한하고 사유를 표시한다.\n\n## URS-003 변경 이력\n상태 변경 시 사용자, 시각, 이전 상태, 이후 상태와 사유를 기록한다.\n\n## 확인 필요\n예외 승인 권한과 세정 유효기간은 비즈니스오너가 확인한다.\n",
@@ -177,7 +177,7 @@ export function createSeed(): AppState {
       version: "1.0",
       workId: works[0].id,
       stageId: "w1-s1",
-      createdBy: "노기현",
+      createdBy: "담당자 B",
       createdAt: "2026-09-15T02:25:00Z",
       content:
         "현재 상태,다음 상태,조건\nIdle,In Use,유효한 세정 이력\nIn Use,Dirty,사용 완료\nDirty,Cleaning,세정 시작\nCleaning,Clean,세정 완료\nClean,Idle,점검 완료\n",
@@ -190,7 +190,7 @@ export function createSeed(): AppState {
       version: "0.1",
       workId: works[0].id,
       stageId: "w1-s2",
-      createdBy: "박비오",
+      createdBy: "담당자 A",
       createdAt: "2026-09-16T00:15:00Z",
       content:
         "# FDS · 설비 상태 전이\n\n상태: 초안 (샘플 문서)\n입력 기준: URS v1.2 / 상태 전이 매트릭스 v1.0\n\n## FDS-001 상태 전이 검증\n전이 요청 시 현재 상태와 허용 전이 매트릭스를 비교한다. 허용되지 않은 전이는 거절한다.\n\n## FDS-002 세정 유효기간\n설비 사용 시작 시 유효기간을 확인한다. 만료 시 사용 불가 안내를 표시한다.\n\n## 추적 관계\nURS-001 → FDS-001\nURS-002 → FDS-002\n\n## 미결정 사항\n예외 승인 권한, 오류 메시지 문구, DB 필드 매핑.\n",
@@ -203,7 +203,7 @@ export function createSeed(): AppState {
       version: "0.3",
       workId: works[1].id,
       stageId: "w2-s4",
-      createdBy: "이희준",
+      createdBy: "담당자 C",
       createdAt: "2026-09-15T07:20:00Z",
       content:
         "ID,시나리오,기대 결과,수행 결과\nTC-001,정상 세정 완료,이력 생성,미수행\nTC-002,세정 중단,중단 사유 기록,미수행\nTC-003,이력 조회,설비별 필터,미수행\n",
@@ -227,13 +227,13 @@ export function createSeed(): AppState {
       actor: "FDS Assistant",
       at: "2026-09-16T00:05:00Z",
       content:
-        "안녕하세요, 박비오님. 기능명세 설계를 이어서 진행하겠습니다.\n\n이전 URS 단계에서 전달된 2개 자료가 연결되어 있습니다. 설비 상태 전이 로직과 세정 유효기간 인터록을 중심으로 FDS 초안을 작성할 수 있습니다.",
+        "안녕하세요, 담당자 A님. 기능명세 설계를 이어서 진행하겠습니다.\n\n이전 URS 단계에서 전달된 2개 자료가 연결되어 있습니다. 설비 상태 전이 로직과 세정 유효기간 인터록을 중심으로 FDS 초안을 작성할 수 있습니다.",
       files: ["a-urs", "a-matrix"],
     },
     {
       id: "m2",
       role: "user",
-      actor: "박비오",
+      actor: "담당자 A",
       at: "2026-09-16T00:10:00Z",
       content:
         "URS를 기준으로 상태 전이 로직을 정리해 주세요. 세정 유효기간이 초과된 경우의 예외 처리도 포함해 주세요.",
@@ -252,7 +252,7 @@ export function createSeed(): AppState {
     {
       id: "n1",
       text: "비즈니스오너와 요구사항 범위 확인 완료. 세정 유효기간 기준은 현행 SOP를 참조합니다.",
-      actor: "노기현",
+      actor: "담당자 B",
       at: "2026-09-15T02:30:00Z",
     },
   ];
@@ -260,14 +260,14 @@ export function createSeed(): AppState {
     works,
     artifacts,
     templates,
-    profile: "박비오",
+    profile: "담당자 A",
     externalUrl: "",
     events: [
       {
         id: "e1",
         workId: works[0].id,
         stageId: "w1-s2",
-        actor: "박비오",
+        actor: "담당자 A",
         action: "산출물 추가",
         detail: "FDS_설비상태전이_v0.1.md · 초안",
         timestamp: "2026-09-16T00:15:00Z",
@@ -276,7 +276,7 @@ export function createSeed(): AppState {
         id: "e2",
         workId: works[0].id,
         stageId: "w1-s2",
-        actor: "박비오",
+        actor: "담당자 A",
         action: "체크리스트 완료",
         detail: "상태 전이 로직 및 예외 조건 정의",
         timestamp: "2026-09-16T00:12:00Z",
@@ -285,7 +285,7 @@ export function createSeed(): AppState {
         id: "e3",
         workId: works[0].id,
         stageId: "w1-s1",
-        actor: "노기현",
+        actor: "담당자 B",
         action: "단계 완료 · 자료 인계",
         detail: "URS → FDS · 산출물 2개 연결",
         timestamp: "2026-09-15T02:30:00Z",
@@ -294,7 +294,7 @@ export function createSeed(): AppState {
         id: "e4",
         workId: works[3].id,
         stageId: "w4-s4",
-        actor: "김해윤",
+        actor: "담당자 D",
         action: "재검토 요청",
         detail: "Hold time 경계값 테스트 보완 필요",
         timestamp: "2026-09-15T01:20:00Z",
@@ -303,7 +303,7 @@ export function createSeed(): AppState {
         id: "e5",
         workId: works[5].id,
         stageId: "w6-s6",
-        actor: "박비오",
+        actor: "담당자 A",
         action: "업무 완료",
         detail: "설비 마스터 데이터 정합성 검증",
         timestamp: "2026-09-14T08:00:00Z",
@@ -312,7 +312,7 @@ export function createSeed(): AppState {
         id: "e6",
         workId: works[7].id,
         stageId: "w8-s6",
-        actor: "이희준",
+        actor: "담당자 C",
         action: "업무 완료",
         detail: "배치별 설비 할당 이력 조회",
         timestamp: "2026-09-14T07:00:00Z",

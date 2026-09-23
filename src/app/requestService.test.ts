@@ -149,8 +149,9 @@ it("role switch cancels owned requests; snapshots share chunks and exclude detac
     .table("threads")
     .update(w.activeThreadId, { activeBundleIds: ["ctx"] });
   const a = await startRequest(d, w.activeThreadId, "question", actor);
-  const { requestSnapshot, cancelTabRequests } =
-    await import("./requestService");
+  const { requestSnapshot, cancelTabRequests } = await import(
+    "./requestService"
+  );
   await d.table("threads").update(w.activeThreadId, { activeBundleIds: [] });
   expect(JSON.stringify(await requestSnapshot(d, a.record, actor))).toContain(
     "PRIVATE_CONTEXT_MARKER",

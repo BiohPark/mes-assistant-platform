@@ -9,6 +9,18 @@ const errors = [];
 page.on("pageerror", (e) => errors.push(e.message));
 const url = "http://127.0.0.1:5180";
 try {
+  await page.goto(url);
+  await expect(page.getByRole("button", {name:"전체 업무 칸반",exact:true})).toBeVisible();
+  // Synthetic legacy fixtures exist only in this isolated browser test.
+  await page.evaluate(async () => {
+    const {hubDB,entityNames}=await import("/src/db/schema.ts");
+    const {seed}=await import("/src/seed.ts");
+    const {convertToV3}=await import("/src/hub.ts");
+    const state=convertToV3(seed());
+    await hubDB.transaction("rw",hubDB.tables,async()=>{
+      for(const name of entityNames){await hubDB.table(name).clear();await hubDB.table(name).bulkPut(state[name]??[]);}
+    });
+  });
   await page.goto(url + "/#/work/urs-work");
   await expect(
     page.getByRole("heading", {
@@ -48,21 +60,32 @@ try {
       baseUrl: "https://mock.invalid/v1",
       maxRequestBytes: 262144,
     });
-    await hubDB.table("bundles").add({
-      id: "e2e-context",
-      name: "전송 선택 테스트",
-      sourceWorkId: "urs-work",
-      createdBy: "staff",
-      createdAt: new Date().toISOString(),
-      excerpts: [],
-      artifactIds: [],
-      summary: "UNIQUE_SELECTED_CONTEXT",
-      note: "",
-    });
-    await hubDB.table("threads").update("urs-work-thread", {
-      activeBundleIds: ["e2e-context"],
-      model: "thread-model",
-    });
+    await hubDB
+      .table("artifacts")
+      .add({
+        id: "e2e-context",
+        workId: "urs-work",
+        name: "전송 선택 테스트.md",
+        mime: "text/markdown",
+        size: 23,
+        version: 1,
+        role: "input",
+        content: "UNIQUE_SELECTED_CONTEXT",
+        createdBy: "staff",
+        createdAt: new Date().toISOString(),
+      });
+    await hubDB
+      .table("taskInputs")
+      .add({
+        id: "e2e-input",
+        workId: "urs-work",
+        artifactId: "e2e-context",
+        main: true,
+        at: new Date().toISOString(),
+      });
+    await hubDB
+      .table("threads")
+      .update("urs-work-thread", { model: "thread-model" });
   });
   let pending;
   let submitted;
@@ -80,7 +103,7 @@ try {
   await expect(
     page.getByText("첫 번째 API 질문", { exact: true }),
   ).toBeVisible();
-  await page.getByLabel("활성 컨텍스트 제거").click();
+  await page.getByLabel("전송 선택 테스트.md 입력 해제").click();
   await pending.fulfill({
     json: {
       model: "actual-model",
@@ -121,6 +144,7 @@ try {
     0,
   );
   await page.getByLabel("사용자 역할 전환").selectOption("requester");
+  await expect(page).toHaveURL(/#\/requests$/);
   await page.goto(url + "/#/work/urs-work");
   await expect(page.getByText("첫 번째 API 응답", { exact: true })).toHaveCount(
     0,
@@ -130,6 +154,7 @@ try {
   ).toHaveCount(0);
   await expect(other.getByLabel("사용자 역할 전환")).toHaveValue("staff");
   await page.getByLabel("사용자 역할 전환").selectOption("admin");
+  await expect(page).toHaveURL(/#\/$/);
   await page.goto(url + "/#/admin");
   await page.getByText("전체 데이터 백업·복원", { exact: true }).click();
   const download = page.waitForEvent("download");

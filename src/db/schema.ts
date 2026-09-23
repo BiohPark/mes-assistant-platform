@@ -15,10 +15,14 @@ export const entityNames = [
   "notifications",
   "requestRecords",
   "completions",
+  "tags",
+  "taskTags",
+  "taskInputs",
+  "catalogOrders",
 ] as const;
 export type EntityName = (typeof entityNames)[number];
 export class HubDB extends Dexie {
-  constructor(name = "mes-agent-hub-v2") {
+  constructor(name = "mes-agent-hub-v3") {
     super(name);
     this.version(1).stores({
       users: "id",
@@ -38,6 +42,10 @@ export class HubDB extends Dexie {
       blobs: "id",
       meta: "id",
       receipts: "id",
+      tags: "id,&[kind+key]",
+      taskTags: "id,workId,tagId,&[workId+tagId]",
+      taskInputs: "id,workId,&[workId+artifactId]",
+      catalogOrders: "id",
     });
   }
 }
@@ -48,10 +56,18 @@ export async function readState(
 ): Promise<HubState> {
   return transact<HubState>(db, "r", db.tables, async () => {
     const pairs = await Promise.all(
-      entityNames.map(async (name) => [name, await db.table(name).toArray()]),
+      entityNames.map(async (name) => [
+        name,
+        db.tables.some((t) => t.name === name)
+          ? await db.table(name).toArray()
+          : [],
+      ]),
     );
     const state = {
       version: 1,
+      ...((await db.table("meta").get("ready"))?.version === 3
+        ? { hubVersion: 3 }
+        : {}),
       session,
       ...Object.fromEntries(pairs),
     } as HubState;
