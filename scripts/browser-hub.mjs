@@ -35,6 +35,11 @@ try {
     }),
     count,
   );
+  await page.getByRole("button", { name: /샘플 검토 assistant/ }).first().click();
+  await page.getByLabel("새 대화 입력").fill("첨부와 함께 남기는 첫 메시지");
+  await page.getByLabel("새 대화 첨부").setInputFiles({ name: "sample.txt", mimeType: "text/plain", buffer: Buffer.from("sample") });
+  await expect(page.locator(".message-body").filter({ hasText: "첨부와 함께 남기는 첫 메시지" })).toBeVisible();
+  await page.goto("http://127.0.0.1:5180/");
   await page
     .getByRole("button", { name: /샘플 접수 assistant/ })
     .first()
@@ -102,8 +107,20 @@ try {
       });
   });
   let body;
+  let mockOpenWebUI = false;
+  const uploadCalls = [];
   await context.route("https://hub-mock.invalid/**", async (route) => {
+    if (mockOpenWebUI && route.request().url().endsWith("/api/v1/files/")) {
+      uploadCalls.push(route.request().url());
+      return route.fulfill({ json: { id: "remote-test-file" } });
+    }
+    if (mockOpenWebUI && route.request().url().includes("/process/status"))
+      return route.fulfill({ json: { status: "completed" } });
     body = route.request().postDataJSON();
+    if (body.messages?.[0]?.role === "system") {
+      const checks = JSON.parse(body.messages[1].content).checks;
+      return route.fulfill({ json: { model: "assessment-model", choices: [{ message: { content: JSON.stringify({ results: checks.map(c => ({ id: c.id, verdict: "achieved", reason: "샘플 검증", references: [] })) }) } }] } });
+    }
     await route.fulfill({
       json: {
         model: "verified-model",
@@ -124,6 +141,24 @@ try {
   assert.equal(body.model, "thread-override");
   assert.ok(JSON.stringify(body).includes("[주 입력]"));
   assert.ok(JSON.stringify(body).includes("URS 결과.md"));
+  await page.evaluate(async () => {
+    const { hubDB } = await import("/src/db/schema.ts");
+    await hubDB.table("profiles").update("demo", {
+      adapter: "openwebui",
+      chatPath: "/api/chat/completions",
+    });
+  });
+  mockOpenWebUI = true;
+  await page.getByLabel("대화 입력").fill("원본 파일을 첨부해 검토하세요");
+  await page.getByRole("button", { name: "assistant 호출", exact: true }).click();
+  await expect.poll(() => uploadCalls.length).toBe(1);
+  await expect.poll(() => body.files?.[0]?.id).toBe("remote-test-file");
+  assert.ok(!JSON.stringify(body.messages).includes("[주 입력] URS 결과.md"));
+  page.once("dialog", d => d.accept("근거 확인"));
+  await page.getByRole("button", { name: "+ 항목 추가" }).click();
+  await page.getByRole("button", { name: "AI 달성도 점검" }).click();
+  await expect(page.getByText(/AI 평가 1\/1/)).toBeVisible();
+  await expect(page.getByText(/현재 체크 1\/1/)).toBeVisible();
   await page.getByLabel(sr.number + " 태그 해제").click();
   await expect(page.getByLabel("URS 결과.md 입력 해제")).toBeVisible();
   await page.getByLabel("URS 결과.md 입력 해제").click();

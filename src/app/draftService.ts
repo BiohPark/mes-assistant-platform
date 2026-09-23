@@ -62,12 +62,13 @@ export async function beginConversation(
       });
     if (file) {
       const blobId = uid();
+      const artifactId = uid();
       await db.table("blobs").add({ id: blobId, blob: file });
       s = reduce(s, {
         type: "artifact.add",
         kind: "input",
         artifact: {
-          id: uid(),
+          id: artifactId,
           workId,
           name: file.name,
           mime: file.type || "application/octet-stream",
@@ -79,6 +80,15 @@ export async function beginConversation(
           createdAt: new Date().toISOString(),
         },
       });
+      if (draft.text.trim())
+        s = reduce(s, {
+          type: "message.add",
+          message: {
+            id: uid(), threadId: w.activeThreadId, role: "user", kind: "request",
+            source: "human", actor: ctx.actorId, content: draft.text.trim(),
+            at: new Date().toISOString(), contextIds: [], fileIds: [artifactId],
+          },
+        });
     } else if (a.connectionMode === "external")
       s = reduce(s, {
         type: "message.add",

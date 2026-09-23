@@ -322,7 +322,8 @@ export function convertToV3(original: HubState): HubState {
   for (const f of s.artifacts)
     if (originalWorks.some((w) => w.id === f.workId)) {
       f.legacyWorkId = f.workId;
-      f.role = "input";
+      f.role = originalWorks.find(w => w.id === f.workId)?.outputIds.includes(f.id)
+        ? "output" : "input";
     }
   for (const a of s.agents)
     if (["urs", "fds", "test", "gmp", "deploy", "legacy"].includes(a.id))

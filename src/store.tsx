@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { cancelTabRequests, recoverExpired } from "./app/requestService";
+import { cancelTabAssessments, recoverExpiredAssessments } from "./app/checklistAssessment";
 import Dexie, { liveQuery } from "dexie";
 import { createBackup } from "./db/backup";
 import { saveDownload } from "./files";
@@ -46,7 +47,7 @@ export function HubProvider({ children }: { children: ReactNode }) {
     let live = true;
     let unsubscribe = () => {};
     const recovery = setInterval(
-      () => void recoverExpired(hubDB).catch(() => {}),
+      () => { void recoverExpired(hubDB).catch(() => {}); void recoverExpiredAssessments(hubDB).catch(() => {}); },
       10000,
     );
     (async () => {
@@ -65,6 +66,7 @@ export function HubProvider({ children }: { children: ReactNode }) {
       .then(async (ready) => {
         if (!ready) return;
         await recoverExpired(hubDB);
+        await recoverExpiredAssessments(hubDB);
         epoch.current = (await hubDB.table("meta").get("ready")).epoch;
         const sub = liveQuery(async () => ({
           state: await readState(hubDB, getSession()),
@@ -103,6 +105,9 @@ export function HubProvider({ children }: { children: ReactNode }) {
         role: old.role,
         tabId,
         commandId: crypto.randomUUID(),
+      });
+      await cancelTabAssessments(hubDB, {
+        actorId: old.userId, role: old.role, tabId, commandId: crypto.randomUUID(),
       });
       setSession({ userId: action.userId, role: action.role });
       const s = { ...ref.current, session: getSession() };

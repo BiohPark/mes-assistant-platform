@@ -88,6 +88,7 @@ export function validateState(value: unknown): asserts value is HubState {
     taskTags: ["workId", "tagId", "at"],
     taskInputs: ["workId", "artifactId", "at"],
     catalogOrders: [],
+    checklistAssessments: ["workId", "actorId", "at", "model", "status"],
   };
   for (const name of entityNames) {
     const rows =
@@ -99,6 +100,7 @@ export function validateState(value: unknown): asserts value is HubState {
         "taskTags",
         "taskInputs",
         "catalogOrders",
+        "checklistAssessments",
       ].includes(name)
         ? []
         : undefined);
@@ -331,6 +333,17 @@ export function validateState(value: unknown): asserts value is HubState {
     )
       throw Error("카탈로그 순서 오류");
     c.agentIds.forEach((x) => id("agents", x));
+  }
+  for (const a of s.checklistAssessments ?? []) {
+    id("works", a.workId);
+    id("users", a.actorId);
+    member(a.status, ["pending", "completed", "conflict", "failed", "cancelled"]);
+    if (typeof a.tabId !== "string" || !Number.isFinite(a.leaseUntil) || !a.snapshot || !Array.isArray(a.snapshot.checks) || !Array.isArray(a.snapshot.messageIds) || !Array.isArray(a.snapshot.fileIds) || !Array.isArray(a.results) || !Array.isArray(a.changes) || !a.score || typeof a.applied !== "boolean")
+      throw Error("AI 달성도 점검 기록 형식 오류");
+    a.snapshot.messageIds.forEach(x => id("messages", x));
+    a.snapshot.fileIds.forEach(x => id("artifacts", x));
+    if (a.score.total !== a.snapshot.checks.length || a.score.achieved < 0 || a.score.unknown < 0)
+      throw Error("AI 달성도 점검 점수 오류");
   }
   if (
     s.hubVersion === 3 &&

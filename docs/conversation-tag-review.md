@@ -20,11 +20,11 @@ Base: `fba4a52` (main/root integration). Review HEAD plus current working change
 - Frontend demo only: role selector is not real auth; no cross-PC sync/SSO/backend. API keys memory only. Actual internal API not available; tests use intercepted requests. Preserve assistant skills/knowledge/question flow.
 
 ## Evidence so far
-- 50 unit/integration tests passed and production build passed after switching to fictional bootstrap data.
+- 62 unit/integration tests passed and production build passed after switching to fictional bootstrap data and adding the file/checklist integration.
 - browser-hub passed delayed creation, URS→SR→FDS, checkbox/star request payload, model override, remove tag/selection, shared order save/cancel, 13+ columns/collapse/reload.
 - browser-smoke passed two-tab append, tab-local role, slow API, remove selected input mid-request, model provenance, failure/retry/cancel, requester privacy/reload, backup download.
 - browser-lifecycle passed SR/share/completion/reopen/backup restore after synchronizing role-switch navigation.
-- Independent review is still pending; the previous reviewer attempt stopped at a usage limit before producing findings.
+- Independent read-only review completed. Its three important findings and one minor backup race are fixed with regression tests or a restore guard.
 
 ## Review focus
 Find actionable bugs, data loss/privacy leaks, contract gaps, and meaningful missing edge tests. Especially audit v2→v3 migration and backup conversion, selected materials surviving source/tag changes, new SR title service/manual race, atomic first persistence and request startup, and UI flows not covered by happy paths. Existing demo limitations are intentional, not production-auth requirements.

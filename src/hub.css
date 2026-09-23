@@ -348,3 +348,11 @@
     flex-basis: 285px;
   }
 }
+.assessment-result {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #d7e4df;
+  border-radius: 12px;
+  background: #f7faf8;
+}
+.assessment-result p { margin: 8px 0 0; }

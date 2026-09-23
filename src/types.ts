@@ -22,6 +22,9 @@ export type Agent = {
   color: string;
 };
 export type ConnectionProfile = {
+  adapter?: "chat-completions" | "openwebui";
+  filesPath?: string;
+  fileStatusPath?: string;
   revision?: number;
   maxRequestBytes?: number;
   id: string;
@@ -178,6 +181,7 @@ export type Notification = {
   read: boolean;
 };
 export type HubState = {
+  checklistAssessments?: ChecklistAssessment[];
   hubVersion?: 3;
   tags?: Tag[];
   taskTags?: TaskTag[];
@@ -200,7 +204,28 @@ export type HubState = {
   activities: Activity[];
   notifications: Notification[];
 };
+export type ChecklistAssessment = {
+  id: string;
+  tabId: string;
+  leaseUntil: number;
+  workId: string;
+  actorId: string;
+  at: string;
+  model: string;
+  status: "pending" | "completed" | "conflict" | "failed" | "cancelled";
+  snapshot: { checks: WorkItem["checks"]; messageIds: string[]; fileIds: string[]; inputFlags?: { artifactId: string; main: boolean }[] };
+  results: { id: string; verdict: "achieved" | "unmet" | "unknown"; reason: string; references: string[] }[];
+  score: { achieved: number; total: number; unknown: number };
+  applied: boolean;
+  changes: { id: string; before: boolean; after: boolean }[];
+  error?: string;
+};
 export type RequestRecord = {
+  kind?: "chat" | "assessment";
+  transport?: "inline" | "openwebui";
+  phase?: "uploading" | "processing" | "chat";
+  fileVersions?: { artifactId: string; version: number; main: boolean }[];
+  profileSnapshot?: ConnectionProfile;
   id: string;
   threadId: string;
   workId: string;

@@ -19,6 +19,7 @@ export const entityNames = [
   "taskTags",
   "taskInputs",
   "catalogOrders",
+  "checklistAssessments",
 ] as const;
 export type EntityName = (typeof entityNames)[number];
 export class HubDB extends Dexie {
@@ -47,6 +48,7 @@ export class HubDB extends Dexie {
       taskInputs: "id,workId,&[workId+artifactId]",
       catalogOrders: "id",
     });
+    this.version(2).stores({ checklistAssessments: "id,workId,status" });
   }
 }
 export const hubDB = new HubDB();

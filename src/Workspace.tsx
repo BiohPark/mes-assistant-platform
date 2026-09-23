@@ -14,7 +14,7 @@ import {
   Link2,
 } from "lucide-react";
 import { useHub } from "./store";
-import { uid, now, canSeeWork, visibleMessages } from "./domain";
+import { uid, now, canSeeWork, canSeeThread, visibleMessages } from "./domain";
 import { Avatar, Modal, statusLabels } from "./ui";
 import { putBlob, downloadArtifact, saveDownload, getBlob } from "./files";
 import { hubDB } from "./db/schema";
@@ -29,6 +29,7 @@ import { TagEditor } from "./TagEditor";
 import { MaterialLibrary, SelectedInputs } from "./MaterialLibrary";
 import { WorkStatusMenu } from "./HubHome";
 import { selectedMaterials, workTags, activityOrder } from "./hub";
+import { assessChecklist, cancelChecklistAssessment } from "./app/checklistAssessment";
 import { ContextPicker } from "./ContextPicker";
 import type { ArtifactVersion, ContextBundle } from "./types";
 export function Workspace({
@@ -42,6 +43,7 @@ export function Workspace({
   const w = s.works.find((x) => x.id === workId);
   const [text, setText] = useState("");
   const [starting, setStarting] = useState(false);
+  const [assessing, setAssessing] = useState(false);
   const [mode, setMode] = useState<"import" | "handoff" | null>(null);
   const [viewBundle, setBundle] = useState<ContextBundle | null>(null);
   const [preview, setPreview] = useState<ArtifactVersion | null>(null);
@@ -151,6 +153,7 @@ export function Workspace({
     .filter(
       (r) =>
         r.threadId === t.id &&
+        (!r.kind || r.kind === "chat") &&
         (staff || (r.role === "requester" && r.actorId === s.session.userId)),
     )
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
@@ -159,6 +162,9 @@ export function Workspace({
     starting ||
     currentRequest?.status === "pending" ||
     currentRequest?.status === "streaming";
+  const latestAssessment = (s.checklistAssessments ?? [])
+    .filter(a => a.workId === w.id)
+    .sort((a, b) => a.at.localeCompare(b.at)).at(-1);
   const commandContext = {
     actorId: s.session.userId,
     role: s.session.role,
@@ -166,7 +172,7 @@ export function Workspace({
     commandId: uid(),
     epoch,
   };
-  async function send(retryOf?: string) {
+  async function send(retryOf?: string, transportOverride?: "inline") {
     const old = retryOf
       ? s.messages.find((m) => m.id === currentRequest?.userMessageId)?.content
       : undefined;
@@ -201,6 +207,7 @@ export function Workspace({
         prompt,
         commandContext,
         retryOf,
+        transportOverride,
       );
       setText("");
       void runRequest(hubDB, prepared, apiKeys[prepared.profile.id] || "");
@@ -605,6 +612,9 @@ export function Workspace({
                         interrupted: "연결 중단",
                       }[currentRequest.status]
                     }{" "}
+                    {busy && currentRequest.phase && (
+                      <span>· { { uploading: "파일 업로드 중", processing: "파일 처리 대기", chat: "대화 응답 대기" }[currentRequest.phase] } </span>
+                    )}
                     ·{" "}
                     {currentRequest.actualModel ||
                       currentRequest.requestedModel}{" "}
@@ -631,6 +641,16 @@ export function Workspace({
                           현재 선택 자료로 재시도
                         </button>
                       )}
+                    {currentRequest.status === "failed" && currentRequest.transport === "openwebui" && w.status !== "done" && <>
+                      {(currentRequest.fileIds ?? []).filter(id => (s.taskInputs ?? []).some(i => i.workId === w.id && i.artifactId === id)).map(id => {
+                        const file = s.artifacts.find(f => f.id === id);
+                        return <button key={id} onClick={() => void dispatch({ type: "input.set", workId: w.id, artifactId: id, selected: false })}>
+                          {file?.name ?? id} 제외
+                        </button>;
+                      })}
+                      {(currentRequest.fileIds ?? []).every(id => s.artifacts.find(f => f.id === id)?.content !== undefined) &&
+                        <button onClick={() => void send(currentRequest.id, "inline")}>선택 텍스트로 재시도</button>}
+                    </>}
                     <button
                       onClick={async () => {
                         try {
@@ -794,6 +814,30 @@ export function Workspace({
               >
                 + 항목 추가
               </button>
+              <button disabled={assessing || latestAssessment?.status === "pending" || !w.checks.length || w.status === "done"}
+                onClick={async () => {
+                  setAssessing(true);
+                  try {
+                    const a = s.agents.find(a => a.id === w.agentId)!;
+                    await assessChecklist(hubDB, w.id, commandContext, apiKeys[a.profileId] || "");
+                    notify("AI 달성도 점검 결과를 기록했습니다.");
+                  } catch (e) { notify(e instanceof Error ? e.message : "점검 실패"); }
+                  finally { setAssessing(false); }
+                }}>
+                AI 달성도 점검
+              </button>
+              {latestAssessment?.status === "pending" && <div role="status">점검 중… <button onClick={() => void cancelChecklistAssessment(hubDB, latestAssessment.id, commandContext).catch(e => notify(String(e)))}>점검 중지</button></div>}
+              {latestAssessment && latestAssessment.status !== "pending" && <div className="assessment-result">
+                <strong>AI 평가 {latestAssessment.score.achieved}/{latestAssessment.score.total}</strong>
+                <span> · 현재 체크 {w.checks.filter(c => c.done).length}/{w.checks.length}</span>
+                <p className="small muted">판단 불가 {latestAssessment.score.unknown} · {latestAssessment.model} · {new Date(latestAssessment.at).toLocaleString()}</p>
+                {latestAssessment.status === "conflict" && <p>점검 중 체크리스트가 변경되었습니다. 결과를 확인한 뒤 재점검하세요.</p>}
+                {latestAssessment.error && <p>{latestAssessment.error}</p>}
+                {latestAssessment.results.map(result => <p key={result.id} className="small">
+                  {w.checks.find(c => c.id === result.id)?.label ?? result.id}: { { achieved: "달성", unmet: "미달성", unknown: "판단 불가" }[result.verdict] } · {result.reason}
+                  {result.references.length > 0 && <span> · 근거 {result.references.join(", ")}</span>}
+                </p>)}
+              </div>}
             </section>
             <section>
               <h3>업무 메모</h3>
@@ -958,7 +1002,7 @@ export function Workspace({
               이 형식은 다운로드하여 확인하세요. 원문 파일은 그대로 보관됩니다.
             </p>
           )}
-          {preview.originThreadId && (
+          {preview.originThreadId && canSeeThread(s, preview.originThreadId) && (
             <p>
               원본 대화:{" "}
               <a href={"#/work/" + preview.workId}>
@@ -967,7 +1011,10 @@ export function Workspace({
             </p>
           )}
           {preview.sourceMessageIds?.map((id) => {
-            const m = s.messages.find((x) => x.id === id);
+            const m = preview.originThreadId
+              ? visibleMessages(s, preview.originThreadId).find(x => x.id === id)
+              : s.session.role === "requester" ? undefined : s.messages.find(x => x.id === id);
+            if (!m) return null;
             return (
               <blockquote key={id}>
                 <small>{m ? actor(m.actor) + " · " + m.at : id}</small>

@@ -19,6 +19,8 @@ export async function createBackup(db: HubDB): Promise<Backup> {
     const state = await readState(db);
     if (state.requestRecords?.some(running))
       throw Error("진행 중 요청을 완료하거나 중지한 후 백업하세요.");
+    if (state.checklistAssessments?.some(a => a.status === "pending"))
+      throw Error("진행 중 AI 달성도 점검을 완료하거나 중지한 후 백업하세요.");
     return { state, blobs: await db.table("blobs").toArray() };
   });
   const { session: _, ...data } = captured.state;
@@ -28,6 +30,7 @@ export async function createBackup(db: HubDB): Promise<Backup> {
     leaseToken: "",
     leaseUntil: 0,
   }));
+  data.checklistAssessments = data.checklistAssessments?.map(a => ({ ...a, tabId: "", leaseUntil: 0 }));
   const blobs = [];
   for (const row of captured.blobs) {
     let binary = "";
@@ -159,6 +162,8 @@ export async function restoreBackup(db: HubDB, value: unknown) {
       (await db.table<RequestRecord>("requestRecords").toArray()).some(running)
     )
       throw Error("진행 중 요청을 완료하거나 중지한 후 복원하세요.");
+    if ((await db.table("checklistAssessments").toArray()).some(a => a.status === "pending"))
+      throw Error("진행 중 AI 달성도 점검을 완료하거나 중지한 후 복원하세요.");
     for (const table of db.tables) await table.clear();
     const restored =
       db.name === "mes-agent-hub-v3" ? convertToV3(state) : state;

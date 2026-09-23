@@ -122,6 +122,15 @@ it("splits old conversations, preserves original state and selected versions", (
   ).toBe("urs-work");
   expect(orderedAgents(s).filter(a=>a.id.startsWith("demo-"))).toHaveLength(3);
 });
+it("preserves legacy output classification without guessing a source conversation", () => {
+  const original = seed();
+  const work = original.works.find(w => w.id === "urs-work")!;
+  const artifact = original.artifacts.find(f => f.workId === work.id)!;
+  work.outputIds.push(artifact.id);
+  const migrated = convertToV3(original);
+  expect(migrated.artifacts.find(f => f.id === artifact.id)?.role).toBe("output");
+  expect(migrated.artifacts.find(f => f.id === artifact.id)?.originThreadId).toBeUndefined();
+});
 it("protects manually edited SR titles from a delayed suggestion", () => {
   let s = convertToV3(seed());
   s.session = { userId: "requester", role: "requester" };
