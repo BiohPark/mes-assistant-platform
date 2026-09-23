@@ -2,6 +2,8 @@
 
 대화와 파일을 주고받는 React · TypeScript 프론트엔드 데모입니다. 에이전트의 실제 업무 로직은 연결된 assistant가 담당하며, 이 플랫폼은 내부 skill·knowledge나 업무 순서를 구현하지 않습니다.
 
+**개발을 이어받는 경우:** [HANDOFF.md — 컨셉·결정·구현 상태·검증·남은 사항](HANDOFF.md)을 먼저 확인하세요. 기능 개편은 `codex/conversation-tag-hub` 브랜치에 있으며 `main`에는 아직 병합하지 않았습니다.
+
 ## 실행
 
 Node.js 22 이상에서 저장소 루트에서 실행합니다. 이전 앱은 `legacy/flowmes`에 보관되어 기본 실행·테스트에 포함되지 않습니다.

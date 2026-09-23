@@ -4,7 +4,7 @@ Binding specification: user's final MES Agent Hub redesign plan in this task.
 
 Root prerequisite completed separately: cd254f5, merged main fba4a52; 37 tests, build, Edge smoke and lifecycle passed (one initial reload/navigation timeout recorded in root-integration.md).
 
-Branch: codex/conversation-tag-hub. Push only after publication sanitization and validation. No redesign merge to main.
+Branch: codex/conversation-tag-hub. Implementation pushed through f99be7c after publication sanitization and validation. No redesign merge to main. Current cross-session status and remaining gaps: [HANDOFF.md](../HANDOFF.md).
 
 ## Tasks and acceptance
 1. Data: one conversation per task, canonical typed tags, immutable material selections, atomic v2→v3 copy and full backup.
@@ -18,11 +18,11 @@ Keep existing completion lock/reopen, request snapshots/leases/cancellation, tea
 
 ## Progress
 - Root prerequisite complete.
-- Tasks 1–5 and the OpenWebUI file adapter/optional AI checklist assessment are implemented. Independent review findings are fixed in the working tree.
+- Tasks 1–5 and the OpenWebUI file adapter/optional AI checklist assessment are implemented. Independent review fixes are committed in f99be7c; remaining integration limits and contract gaps are recorded in HANDOFF.md.
 - Latest user scope: build the conversation/file-sharing platform only. Actual assistant data is registered by users. Replace reference-derived catalog with three fictional examples and no actual business records or addresses.
 - 2026-09-23: 62 tests passed; production build passed; all three Edge browser suites passed using synthetic data and mocked API.
-- The fictional conversation/tag foundation was committed as 84a3c71. The unpublished reference-containing commit was removed from this branch ancestry; follow-up integration awaits its final commit/push.
-- Before branch push: final staged-file and commit-history scan. Independent review found and the implementation fixed attachment-first text loss, stale checklist evidence, legacy Output classification, and restore during an active assessment.
+- The fictional conversation/tag foundation was committed as 84a3c71 and the file/checklist integration as f99be7c. Both were pushed to the feature branch. The unpublished reference-containing commit was removed from this branch ancestry.
+- Staged-file and commit-history publication checks were completed before the implementation push. Independent review found and the implementation fixed attachment-first text loss, stale checklist evidence, legacy Output classification, and restore during an active assessment.
 - Remote historical commits were not rewritten. Sanitizing the current snapshot does not remove information already present in older published commits.
 
 ## Implementation decisions

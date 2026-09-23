@@ -1,5 +1,7 @@
 # Whole-branch review package
 
+Historical review brief. Review completed and fixes committed/pushed in `f99be7c`; the instructions below describe that review, not a new pending review request. See [HANDOFF.md](../HANDOFF.md) for current implementation boundaries, verification evidence and remaining work.
+
 Base: `fba4a52` (main/root integration). Review HEAD plus current working changes and new files on `codex/conversation-tag-hub`. Do not include the archived FlowMES implementation. Read-only review; no edits, git mutations, or further reviewers.
 
 ## Product contract
