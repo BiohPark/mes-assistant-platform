@@ -15,6 +15,8 @@ import { canSeeWork } from "./domain";
 export const agentStatusLabels = {
   open: "오픈",
   working: "작업중",
+  testing: "테스트",
+  unconfigured: "미설정",
   retired: "폐기",
 };
 export function Gallery() {

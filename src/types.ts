@@ -1,6 +1,7 @@
 export type Role = "staff" | "requester" | "admin";
 export type User = { id: string; name: string; team: string };
 export type Agent = {
+  catalog?: boolean;
   revision?: number;
   id: string;
   name: string;
@@ -10,7 +11,7 @@ export type Agent = {
   link1: string;
   link2: string;
   owner: string;
-  status: "open" | "working" | "retired";
+  status: "open" | "working" | "testing" | "unconfigured" | "retired";
   examples: string[];
   imageId?: string;
   intake: boolean;
@@ -21,6 +22,9 @@ export type Agent = {
   color: string;
 };
 export type ConnectionProfile = {
+  adapter?: "chat-completions" | "openwebui";
+  filesPath?: string;
+  fileStatusPath?: string;
   revision?: number;
   maxRequestBytes?: number;
   id: string;
@@ -35,6 +39,8 @@ export type ConnectionProfile = {
 };
 export type WorkStatus = "waiting" | "active" | "review" | "done";
 export type WorkItem = {
+  legacyWorkId?: string;
+  titleSource?: "fallback" | "manual" | "ai";
   revision?: number;
   id: string;
   agentId: string;
@@ -82,6 +88,10 @@ export type Message = {
   visibleToRequester?: string;
 };
 export type ArtifactVersion = {
+  legacyWorkId?: string;
+  originThreadId?: string;
+  sourceMessageIds?: string[];
+  role?: "input" | "output";
   id: string;
   workId: string;
   name: string;
@@ -132,6 +142,8 @@ export type SharedResult = {
   at: string;
 };
 export type ServiceRequest = {
+  titleSource?: "fallback" | "manual" | "ai";
+  tagId?: string;
   id: string;
   number?: string;
   title: string;
@@ -169,6 +181,12 @@ export type Notification = {
   read: boolean;
 };
 export type HubState = {
+  checklistAssessments?: ChecklistAssessment[];
+  hubVersion?: 3;
+  tags?: Tag[];
+  taskTags?: TaskTag[];
+  taskInputs?: TaskInput[];
+  catalogOrders?: CatalogOrder[];
   requestRecords?: RequestRecord[];
   completions?: CompletionSnapshot[];
   version: 1;
@@ -186,7 +204,28 @@ export type HubState = {
   activities: Activity[];
   notifications: Notification[];
 };
+export type ChecklistAssessment = {
+  id: string;
+  tabId: string;
+  leaseUntil: number;
+  workId: string;
+  actorId: string;
+  at: string;
+  model: string;
+  status: "pending" | "completed" | "conflict" | "failed" | "cancelled";
+  snapshot: { checks: WorkItem["checks"]; messageIds: string[]; fileIds: string[]; inputFlags?: { artifactId: string; main: boolean }[] };
+  results: { id: string; verdict: "achieved" | "unmet" | "unknown"; reason: string; references: string[] }[];
+  score: { achieved: number; total: number; unknown: number };
+  applied: boolean;
+  changes: { id: string; before: boolean; after: boolean }[];
+  error?: string;
+};
 export type RequestRecord = {
+  kind?: "chat" | "assessment";
+  transport?: "inline" | "openwebui";
+  phase?: "uploading" | "processing" | "chat";
+  fileVersions?: { artifactId: string; version: number; main: boolean }[];
+  profileSnapshot?: ConnectionProfile;
   id: string;
   threadId: string;
   workId: string;
@@ -219,6 +258,8 @@ export type RequestRecord = {
   retryOf?: string;
 };
 export type CompletionSnapshot = {
+  inputs?: TaskInput[];
+  tags?: Tag[];
   id: string;
   workId: string;
   at: string;
@@ -228,6 +269,23 @@ export type CompletionSnapshot = {
   work: WorkItem;
 };
 export type Action =
+  | { type: "sr.register"; workId: string; id: string }
+  | {
+      type: "tag.attach";
+      workId: string;
+      label: string;
+      kind: "keyword" | "sr";
+    }
+  | { type: "tag.detach"; workId: string; tagId: string }
+  | {
+      type: "input.set";
+      workId: string;
+      artifactId: string;
+      selected: boolean;
+      main?: boolean;
+    }
+  | { type: "catalog.order"; agentIds: string[]; expectedRevision: number }
+  | { type: "sr.title"; srId: string; title: string; source: "manual" | "ai" }
   | { type: "session"; userId: string; role: Role }
   | { type: "agent.save"; agent: Agent }
   | { type: "profile.save"; profile: ConnectionProfile }
@@ -302,3 +360,26 @@ export type Action =
       status: "received" | "responded" | "closed";
     }
   | { type: "notification.read"; id: string };
+
+export type Tag = {
+  id: string;
+  kind: "keyword" | "sr";
+  label: string;
+  key: string;
+  color: string;
+};
+export type TaskTag = {
+  id: string;
+  workId: string;
+  tagId: string;
+  at: string;
+  order?: number;
+};
+export type TaskInput = {
+  id: string;
+  workId: string;
+  artifactId: string;
+  main: boolean;
+  at: string;
+};
+export type CatalogOrder = { id: string; agentIds: string[]; revision: number };

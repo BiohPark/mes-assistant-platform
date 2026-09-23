@@ -37,17 +37,15 @@ describe("API context boundary", () => {
     s.profiles[0].mode = "api";
     s.profiles[0].baseUrl = "https://ai.internal/v1/";
     s.threads[0].model = "session-override";
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            model: "actual-served-model",
-            choices: [{ message: { content: "API response" } }],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      );
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: "actual-served-model",
+          choices: [{ message: { content: "API response" } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
     vi.stubGlobal("fetch", fetchMock);
     const result = await callAssistant(
       s,

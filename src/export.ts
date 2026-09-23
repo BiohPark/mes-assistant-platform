@@ -80,6 +80,9 @@ export async function buildWorkExport(
   const artifactIds = new Set([
     ...work.inputIds,
     ...work.outputIds,
+    ...(s.taskInputs ?? [])
+      .filter((i) => i.workId === workId)
+      .map((i) => i.artifactId),
     ...messages.flatMap((m) => m.fileIds),
     ...bundles.flatMap((b) => b.artifactIds),
     ...sharedResults.flatMap((r) => r.artifactIds),
@@ -158,6 +161,11 @@ export async function buildWorkExport(
     exportedAt: new Date().toISOString(),
     exportedBy: s.session.userId,
     work,
+    taskInputs: (s.taskInputs ?? []).filter((i) => i.workId === workId),
+    taskTags: (s.taskTags ?? []).filter((i) => i.workId === workId),
+    tags: (s.tags ?? []).filter((t) =>
+      s.taskTags?.some((x) => x.workId === workId && x.tagId === t.id),
+    ),
     threads,
     messages,
     artifacts,

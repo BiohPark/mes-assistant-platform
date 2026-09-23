@@ -12,17 +12,9 @@ try {
   await page.goto(base);
   await expect(page.getByLabel("사용자 역할 전환")).toBeVisible();
   await page.getByLabel("사용자 역할 전환").selectOption("requester");
+  await expect(page).toHaveURL(/#\/requests$/);
   await page.getByRole("link", { name: "SR 접수", exact: true }).click();
-  await page.getByLabel("요청 제목").fill("재검증 SR 요청");
-  await page.getByRole("button", { name: "접수 대화 시작" }).click();
-  await expect(
-    page.getByRole("heading", {
-      name: "재검증 SR 요청",
-      exact: true,
-      level: 1,
-    }),
-  ).toBeVisible();
-  await page.getByLabel("대화 입력").fill("세척 주기 알림이 필요합니다.");
+  await page.getByLabel("새 대화 입력").fill("세척 주기 알림이 필요합니다.");
   await page
     .getByRole("button", { name: "assistant 호출", exact: true })
     .click();
@@ -34,12 +26,13 @@ try {
   const request = await page.evaluate(async () => {
     const { hubDB } = await import("/src/db/schema.ts");
     return (await hubDB.table("requests").toArray()).find(
-      (r) => r.title === "재검증 SR 요청",
+      (r) => r.title === "세척 주기 알림이 필요합니다.",
     );
   });
   assert.ok(request.number);
   assert.equal(request.status, "received");
   await page.getByLabel("사용자 역할 전환").selectOption("staff");
+  await expect(page).toHaveURL(/#\/$/);
   await page.goto(base + "/#/work/" + request.workId);
   await page
     .getByRole("button", { name: "요청자에게 공유", exact: true })
@@ -48,41 +41,28 @@ try {
   await modal.locator("select").selectOption(request.id);
   await modal.locator("textarea").fill("요청자에게 공개한 검토 결과");
   await modal.getByRole("button", { name: /공유/ }).click();
-  await page.goto(base + "/#/agent/urs");
-  const card = page
-    .locator(".board-work")
-    .filter({ has: page.getByText("재검증 SR 요청", { exact: true }) });
-  await card.locator("select").selectOption("done");
-  await page.getByRole("dialog").locator("textarea").fill("시연 검토 완료");
   await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "확인", exact: true })
-    .click();
-  await page.goto(base + "/#/work/" + request.workId);
+    .getByLabel("세척 주기 알림이 필요합니다. 상태")
+    .selectOption("done");
   await expect(page.getByText(/완료된 업무입니다/)).toBeVisible();
-  await expect(page.getByLabel("비즈니스 목적 확인")).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "assistant 호출", exact: true }),
+  ).toBeDisabled();
   await page.getByLabel("메모", { exact: true }).fill("완료 후 추가 메모");
   await page.getByRole("button", { name: "메모 남기기", exact: true }).click();
   await expect(
     page.getByText("완료 후 추가 메모", { exact: true }),
   ).toBeVisible();
-  await page.goto(base + "/#/agent/urs");
+  page.once("dialog", (d) => d.accept("후속 검토 재개"));
   await page
-    .locator(".board-work")
-    .filter({ has: page.getByText("재검증 SR 요청", { exact: true }) })
-    .locator("select")
+    .getByLabel("세척 주기 알림이 필요합니다. 상태")
     .selectOption("active");
-  await page.getByRole("dialog").locator("textarea").fill("후속 검토 재개");
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "확인", exact: true })
-    .click();
-  await page.goto(base + "/#/work/" + request.workId);
-  await expect(page.getByLabel("비즈니스 목적 확인")).toBeEnabled();
+  await expect(page.getByText(/완료된 업무입니다/)).toHaveCount(0);
   await expect(
     page.getByText("완료 후 추가 메모", { exact: true }),
   ).toBeVisible();
   await page.getByLabel("사용자 역할 전환").selectOption("requester");
+  await expect(page).toHaveURL(/#\/requests$/);
   await page.goto(base + "/#/requests/" + request.id);
   await expect(
     page.getByText("요청자에게 공개한 검토 결과", { exact: true }),
@@ -91,6 +71,7 @@ try {
     page.getByText("완료 후 추가 메모", { exact: true }),
   ).toHaveCount(0);
   await page.getByLabel("사용자 역할 전환").selectOption("admin");
+  await expect(page).toHaveURL(/#\/$/);
   await page.goto(base + "/#/admin");
   await page.getByText("전체 데이터 백업·복원", { exact: true }).click();
   const downloading = page.waitForEvent("download");
@@ -108,7 +89,10 @@ try {
     page.getByRole("button", { name: "검사한 백업으로 교체" }),
   ).toBeVisible();
   page.once("dialog", (d) => d.accept());
+  const reloaded = page.waitForEvent("load");
   await page.getByRole("button", { name: "검사한 백업으로 교체" }).click();
+  await reloaded;
+  await expect(page.getByLabel("사용자 역할 전환")).toBeVisible();
   await expect(
     other.getByText(/백업 복원으로 데이터가 교체되었습니다/),
   ).toBeVisible();

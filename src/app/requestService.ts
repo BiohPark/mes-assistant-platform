@@ -4,11 +4,15 @@ import type { RequestRecord, ConnectionProfile } from "../types";
 import type { CommandContext } from "../domain/commands";
 import { buildRequest } from "../api";
 import { canSeeThread } from "../domain";
+import { selectedMaterials } from "../hub";
+import { sendOpenWebUI } from "./openWebUI";
+import type { ArtifactVersion } from "../types";
 export type PreparedBody = ReturnType<typeof buildRequest>;
 type Prepared = {
   record: RequestRecord;
   body: PreparedBody;
   profile: ConnectionProfile;
+  files: ArtifactVersion[];
 };
 const controllers = new Map<string, AbortController>();
 const active = (r: RequestRecord) =>
@@ -50,6 +54,7 @@ export async function startRequest(
   prompt: string,
   ctx: CommandContext,
   retryOf?: string,
+  transportOverride?: "inline",
 ): Promise<Prepared> {
   return transact<Prepared>(db, "rw", db.tables, async () => {
     const ready = await db.table("meta").get("ready");
@@ -85,7 +90,8 @@ export async function startRequest(
         throw Error("재시도할 요청을 확인하세요.");
     }
     // Only the live selections are assembled; old request snapshots never enter history.
-    const body = buildRequest(s, threadId, prompt);
+    const transport = profile.mode === "api" && profile.adapter === "openwebui" && transportOverride !== "inline" ? "openwebui" : "inline";
+    const body = buildRequest(s, threadId, prompt, transport === "inline");
     if (
       new TextEncoder().encode(JSON.stringify(body)).byteLength >
       (profile.maxRequestBytes ?? 262144)
@@ -95,12 +101,17 @@ export async function startRequest(
       );
     const id = crypto.randomUUID(),
       at = new Date().toISOString();
-    const fileIds = (t.selectedInputIds ?? w.inputIds).filter(
-      (id) =>
-        w.inputIds.includes(id) &&
-        (ctx.role !== "requester" ||
-          s.artifacts.find((f) => f.id === id)?.createdBy === ctx.actorId),
-    );
+    const fileIds =
+      s.hubVersion === 3
+        ? selectedMaterials(s, w.id).map((f) => f.id)
+        : (t.selectedInputIds ?? w.inputIds).filter(
+            (id) =>
+              w.inputIds.includes(id) &&
+              (ctx.role !== "requester" ||
+                s.artifacts.find((f) => f.id === id)?.createdBy ===
+                  ctx.actorId),
+          );
+    const files = fileIds.map(id => structuredClone(s.artifacts.find(f => f.id === id)!));
     const snapshot: RequestRecord["snapshot"] = {
       model: body.model,
       stream: false,
@@ -123,6 +134,11 @@ export async function startRequest(
       createdAt: at,
       requestedModel: body.model,
       source: profile.mode,
+      kind: "chat",
+      transport,
+      phase: transport === "openwebui" && files.length ? "uploading" : "chat",
+      fileVersions: files.map(f => ({ artifactId: f.id, version: f.version, main: !!s.taskInputs?.some(i => i.workId === w.id && i.artifactId === f.id && i.main) })),
+      profileSnapshot: structuredClone(profile),
       contextIds: ctx.role === "requester" ? [] : [...t.activeBundleIds],
       fileIds,
       userMessageId: crypto.randomUUID(),
@@ -156,7 +172,7 @@ export async function startRequest(
       detail: body.model,
     });
     await db.table("works").update(w.id, { updatedAt: at });
-    return { record, body, profile };
+    return { record, body, profile: structuredClone(profile), files };
   });
 }
 export async function finishRequest(
@@ -262,10 +278,10 @@ export async function requestSnapshot(
       ...(m.name ? { name: m.name } : {}),
     });
   }
-  return { model: r.snapshot.model, messages, stream: false };
+  return { model: r.snapshot.model, messages, stream: false, transport: r.transport ?? "inline", fileVersions: r.fileVersions ?? [] };
 }
 export async function runRequest(db: HubDB, prepared: Prepared, key: string) {
-  const { record: r, profile, body } = prepared;
+  const { record: r, profile, body, files } = prepared;
   const controller = new AbortController();
   controllers.set(r.id, controller);
   const heartbeat = setInterval(() => {
@@ -306,11 +322,23 @@ export async function runRequest(db: HubDB, prepared: Prepared, key: string) {
       });
       result = {
         content:
-          "[샘플 응답]\n요청을 확인했습니다. 선택 자료를 바탕으로 검토 범위와 완료 기준을 정리하세요.\n\n" +
-          body.messages.at(-1)!.content,
+          `[샘플 응답 · 실제 분석 결과가 아닙니다]\n요청을 받았습니다. 선택 자료 ${files.length}개가 연결된 시연입니다.\n\n` + body.messages.at(-1)!.content,
         model: body.model,
         source: "demo",
       };
+    } else if (r.transport === "openwebui") {
+      const epoch = (await db.table("meta").get("ready"))?.epoch;
+      result = await sendOpenWebUI({
+        profile, body, files, key,
+        scope: `${epoch}|${r.actorId}|${r.role}`,
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(360000)]),
+        loadBlob: async id => (await db.table("blobs").get(id))?.blob,
+        onPhase: async phase => {
+          const current = await db.table<RequestRecord>("requestRecords").get(r.id);
+          if (!current || !active(current) || current.leaseToken !== r.leaseToken) throw Error("중지된 요청입니다.");
+          await db.table("requestRecords").update(r.id, { phase });
+        },
+      });
     } else {
       const response = await fetch(
         profile.baseUrl.replace(/\/$/, "") +

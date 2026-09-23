@@ -2,11 +2,14 @@ import "fake-indexeddb/auto";
 import { afterEach, expect, it } from "vitest";
 import { HubDB, readState } from "../db/schema";
 import { initializeDatabase } from "../db/migrateV1";
+import { initializeV3 } from "../db/migrateV3";
+import { emptyDemoSeed } from "../demoCatalog";
 import {
   startRequest,
   finishRequest,
   cancelRequest,
   recoverExpired,
+  runRequest,
 } from "./requestService";
 const dbs: HubDB[] = [];
 const actor = {
@@ -99,6 +102,36 @@ it("rejects oversized requests before storing a turn", async () => {
   ).rejects.toThrow(/한도/);
   expect(await d.table("messages").count()).toBe(count);
 });
+it("freezes selected version and uses OpenWebUI file IDs without injecting file text", async () => {
+  const d = new HubDB("owui-" + crypto.randomUUID());
+  dbs.push(d);
+  await initializeV3(d, JSON.stringify(emptyDemoSeed()), "absent-" + crypto.randomUUID());
+  const at = new Date().toISOString();
+  await d.table("profiles").update("demo", { mode: "api", adapter: "openwebui", baseUrl: "https://mock.invalid", chatPath: "/api/chat/completions", defaultModel: "model" });
+  await d.table("works").add({ id: "w", agentId: "demo-writing", title: "test", description: "", owner: "staff", createdBy: "staff", createdAt: at, updatedAt: at, status: "active", archived: false, manual: false, externalUrl: "", checks: [], notes: [], inputIds: [], outputIds: [], activeThreadId: "t" });
+  await d.table("threads").add({ id: "t", workId: "w", title: "test", createdAt: at, model: "", srIds: [], activeBundleIds: [] });
+  await d.table("artifacts").add({ id: "v1", workId: "w", name: "test.txt", mime: "text/plain", size: 12, version: 1, content: "SECRET_INPUT", createdBy: "staff", createdAt: at });
+  await d.table("taskInputs").add({ id: "i1", workId: "w", artifactId: "v1", main: true, at });
+  const prepared = await startRequest(d, "t", "질문", actor);
+  expect(JSON.stringify(prepared.body)).not.toContain("SECRET_INPUT");
+  await d.table("taskInputs").delete("i1");
+  const calls: string[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    calls.push(url);
+    if (url.endsWith("/files/")) return new Response(JSON.stringify({ id: "remote" }));
+    if (url.includes("process/status")) return new Response(JSON.stringify({ status: "completed" }));
+    expect(JSON.parse(init?.body as string).files).toEqual([{ type: "file", id: "remote" }]);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "done" } }] }));
+  }) as typeof fetch;
+  try { await runRequest(d, prepared, "key"); } finally { globalThis.fetch = original; }
+  expect(calls).toHaveLength(3);
+  expect((await d.table("requestRecords").get(prepared.record.id)).fileVersions).toEqual([{ artifactId: "v1", version: 1, main: true }]);
+  await d.table("taskInputs").add({ id: "i2", workId: "w", artifactId: "v1", main: false, at });
+  const manualFallback = await startRequest(d, "t", "명시적 텍스트 재시도", actor, undefined, "inline");
+  expect(manualFallback.record.transport).toBe("inline");
+  expect(JSON.stringify(manualFallback.body)).toContain("SECRET_INPUT");
+});
 
 it("rejects internal snapshot reads by requesters and preserves append order after reload", async () => {
   const d = await fresh();
@@ -149,8 +182,9 @@ it("role switch cancels owned requests; snapshots share chunks and exclude detac
     .table("threads")
     .update(w.activeThreadId, { activeBundleIds: ["ctx"] });
   const a = await startRequest(d, w.activeThreadId, "question", actor);
-  const { requestSnapshot, cancelTabRequests } =
-    await import("./requestService");
+  const { requestSnapshot, cancelTabRequests } = await import(
+    "./requestService"
+  );
   await d.table("threads").update(w.activeThreadId, { activeBundleIds: [] });
   expect(JSON.stringify(await requestSnapshot(d, a.record, actor))).toContain(
     "PRIVATE_CONTEXT_MARKER",

@@ -11,7 +11,8 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useHub } from "./store";
-import { Gallery } from "./Gallery";
+import { HubHome } from "./HubHome";
+import { NewConversation } from "./NewConversation";
 import { AgentAdmin } from "./AgentAdmin";
 import { WorkBoard } from "./WorkBoard";
 import { Workspace } from "./Workspace";
@@ -20,9 +21,11 @@ import { uid } from "./domain";
 import { downloadArtifact, saveDownload } from "./files";
 import { hubDB, readState } from "./db/schema";
 import { startRequest, runRequest } from "./app/requestService";
+import { suggestSrTitle } from "./app/titleService";
+import { orderedAgents } from "./hub";
 import { tabId } from "./app/session";
 function Requests({ intake = false }: { intake?: boolean }) {
-  const { state: s, dispatch, notify } = useHub();
+  const { state: s, dispatch, notify, apiKeys, epoch } = useHub();
   const [title, setTitle] = useState("");
   const [active, setActive] = useState(location.hash.split("/")[2] || "");
   useEffect(() => {
@@ -119,8 +122,26 @@ function Requests({ intake = false }: { intake?: boolean }) {
                   <button
                     className="primary"
                     onClick={async () => {
-                      if (await dispatch({ type: "sr.submit", srId: r.id }))
+                      if (await dispatch({ type: "sr.submit", srId: r.id })) {
                         notify("SR 접수가 완료되었습니다.");
+                        const agent = s.agents.find(
+                          (a) =>
+                            a.id ===
+                            s.works.find((w) => w.id === r.workId)?.agentId,
+                        );
+                        void suggestSrTitle(
+                          hubDB,
+                          r.id,
+                          apiKeys[agent?.profileId || ""] || "",
+                          {
+                            actorId: s.session.userId,
+                            role: s.session.role,
+                            tabId,
+                            commandId: uid(),
+                            epoch,
+                          },
+                        );
+                      }
                     }}
                   >
                     지금 SR 접수
@@ -140,7 +161,9 @@ function Requests({ intake = false }: { intake?: boolean }) {
                         type: "sr.status",
                         srId: r.id,
                         status: e.target.value as
-                          "received" | "responded" | "closed",
+                          | "received"
+                          | "responded"
+                          | "closed",
                       })
                     }
                   >
@@ -149,6 +172,60 @@ function Requests({ intake = false }: { intake?: boolean }) {
                     <option value="closed">종료</option>
                   </select>
                 </label>
+              )}
+              {(s.session.role === "admin" ||
+                s.session.userId === r.requester) && (
+                <button
+                  onClick={async () => {
+                    const title = prompt("요청 제목", r.title);
+                    if (title)
+                      await dispatch({
+                        type: "sr.title",
+                        srId: r.id,
+                        title,
+                        source: "manual",
+                      });
+                  }}
+                >
+                  요청 제목 수정
+                </button>
+              )}
+              {s.session.role !== "requester" && r.number && (
+                <details className="card">
+                  <summary>연결 업무 시작</summary>
+                  <p className="muted">
+                    SR 태그를 이어받습니다. 자료는 새 대화에서 직접 선택하세요.
+                  </p>
+                  {orderedAgents(s)
+                    .filter((a) => a.status !== "retired")
+                    .map((a) => (
+                      <div className="row wrap" key={a.id}>
+                        <strong>{a.name}</strong>
+                        {s.works
+                          .filter(
+                            (w) =>
+                              w.agentId === a.id &&
+                              w.status !== "done" &&
+                              !w.archived &&
+                              s.threads.some(
+                                (t) =>
+                                  t.workId === w.id && t.srIds.includes(r.id),
+                              ),
+                          )
+                          .map((w) => (
+                            <a key={w.id} href={"#/work/" + w.id}>
+                              이어가기 · {w.title}
+                            </a>
+                          ))}
+                        <a
+                          className="btn"
+                          href={"#/agent/" + a.id + "?sr=" + r.id}
+                        >
+                          새 대화
+                        </a>
+                      </div>
+                    ))}
+                </details>
               )}
               <Workspace key={r.workId} workId={r.workId} intake />
               <h2>공유받은 결과</h2>
@@ -398,7 +475,7 @@ export function App() {
           >
             <option value="staff">업무 담당자</option>
             <option value="requester">요청자</option>
-            <option value="admin">관리자</option>
+            <option value="admin">System Owner</option>
           </select>
           <button
             className="icon-btn"
@@ -434,7 +511,7 @@ export function App() {
             <p>
               역할 전환은 화면 시연입니다.
               <br />
-              실제 인증·PC 간 동기화는 제공하지 않습니다. 저장소 v2로 이관한
+              실제 인증·PC 간 동기화는 제공하지 않습니다. 저장소 v3로 이관한
               뒤에는 구버전 앱에서 같은 자료를 편집하지 마세요.
             </p>
           </div>
@@ -443,19 +520,30 @@ export function App() {
           {requester && !["intake", "requests", "work"].includes(section) ? (
             <Requests />
           ) : section === "agent" ? (
-            <WorkBoard agentId={parts[1]} />
+            <NewConversation
+              key={hash}
+              agentId={parts[1]}
+              srId={
+                new URLSearchParams(hash.split("?")[1] || "").get("sr") ||
+                undefined
+              }
+            />
           ) : section === "work" ? (
             <Workspace key={parts[1]} workId={parts[1]} />
           ) : section === "admin" ? (
             <AgentAdmin />
           ) : section === "intake" ? (
-            <Requests intake />
+            <NewConversation
+              key="intake"
+              agentId={s.agents.find((a) => a.intake)?.id || ""}
+              intake
+            />
           ) : section === "requests" ? (
             <Requests />
           ) : section === "reports" ? (
             <Reports />
           ) : (
-            <Gallery />
+            <HubHome />
           )}
         </div>
       </div>

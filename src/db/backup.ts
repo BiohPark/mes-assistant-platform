@@ -1,9 +1,10 @@
 import { transact, HubDB, entityNames, readState } from "./schema";
 import { validateState } from "./validate";
 import type { HubState, RequestRecord } from "../types";
+import { convertToV3 } from "../hub";
 export type Backup = {
   format: "mes-agent-hub";
-  version: 2;
+  version: 2 | 3;
   createdAt: string;
   data: Omit<HubState, "session">;
   blobs: { id: string; mime: string; base64: string; sha256: string }[];
@@ -18,6 +19,8 @@ export async function createBackup(db: HubDB): Promise<Backup> {
     const state = await readState(db);
     if (state.requestRecords?.some(running))
       throw Error("진행 중 요청을 완료하거나 중지한 후 백업하세요.");
+    if (state.checklistAssessments?.some(a => a.status === "pending"))
+      throw Error("진행 중 AI 달성도 점검을 완료하거나 중지한 후 백업하세요.");
     return { state, blobs: await db.table("blobs").toArray() };
   });
   const { session: _, ...data } = captured.state;
@@ -27,6 +30,7 @@ export async function createBackup(db: HubDB): Promise<Backup> {
     leaseToken: "",
     leaseUntil: 0,
   }));
+  data.checklistAssessments = data.checklistAssessments?.map(a => ({ ...a, tabId: "", leaseUntil: 0 }));
   const blobs = [];
   for (const row of captured.blobs) {
     let binary = "";
@@ -42,7 +46,7 @@ export async function createBackup(db: HubDB): Promise<Backup> {
   }
   return {
     format: "mes-agent-hub",
-    version: 2,
+    version: data.hubVersion === 3 ? 3 : 2,
     createdAt: new Date().toISOString(),
     data,
     blobs,
@@ -62,7 +66,7 @@ export async function validateBackup(value: unknown): Promise<{
   const b = value as Backup;
   if (
     b.format !== "mes-agent-hub" ||
-    b.version !== 2 ||
+    ![2, 3].includes(b.version) ||
     !Array.isArray(b.blobs) ||
     !b.data
   )
@@ -158,13 +162,17 @@ export async function restoreBackup(db: HubDB, value: unknown) {
       (await db.table<RequestRecord>("requestRecords").toArray()).some(running)
     )
       throw Error("진행 중 요청을 완료하거나 중지한 후 복원하세요.");
+    if ((await db.table("checklistAssessments").toArray()).some(a => a.status === "pending"))
+      throw Error("진행 중 AI 달성도 점검을 완료하거나 중지한 후 복원하세요.");
     for (const table of db.tables) await table.clear();
+    const restored =
+      db.name === "mes-agent-hub-v3" ? convertToV3(state) : state;
     for (const name of entityNames)
-      await db.table<{ id: string }>(name).bulkPut(state[name] ?? []);
+      await db.table<{ id: string }>(name).bulkPut(restored[name] ?? []);
     await db.table("blobs").bulkPut(blobs);
     await db.table("meta").put({
       id: "ready",
-      version: 2,
+      version: restored.hubVersion === 3 ? 3 : 2,
       epoch: crypto.randomUUID(),
       at: new Date().toISOString(),
       restored: true,

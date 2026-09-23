@@ -53,8 +53,9 @@ it("blocks live restore and rejects old epochs after atomic restore, restoring u
   const d = new HubDB("backup-lease-" + crypto.randomUUID());
   try {
     await initializeDatabase(d, null);
-    const { startRequest, finishRequest } =
-      await import("../app/requestService");
+    const { startRequest, finishRequest } = await import(
+      "../app/requestService"
+    );
     const { executeCommand } = await import("./commands");
     const epoch = (await d.table("meta").get("ready")).epoch;
     const ctx = {

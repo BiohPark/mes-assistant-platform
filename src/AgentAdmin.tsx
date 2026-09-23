@@ -1,5 +1,5 @@
 import { BackupPanel } from "./BackupPanel";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Plus, Save, Download, Trash2, Upload, Settings2 } from "lucide-react";
 import { useHub } from "./store";
 import { Avatar, Modal } from "./ui";
@@ -7,10 +7,19 @@ import { putBlob, downloadBlob, getBlob } from "./files";
 import type { Agent, ConnectionProfile } from "./types";
 import { agentStatusLabels } from "./Gallery";
 import "./catalog.css";
-export function AgentAdmin() {
+export function AgentAdmin({
+  initialAgentId,
+  embedded = false,
+  onClose,
+}: { initialAgentId?: string; embedded?: boolean; onClose?: () => void } = {}) {
   const { state, dispatch, notify, apiKeys, setApiKey } = useHub();
   const [query, setQuery] = useState("");
-  const [draft, setDraft] = useState<Agent>();
+  const [draft, setDraft] = useState<Agent | undefined>(() =>
+    state.agents.find((a) => a.id === initialAgentId),
+  );
+  useEffect(() => {
+    if (embedded && !draft) onClose?.();
+  }, [draft, embedded]);
   const [profile, setProfile] = useState<ConnectionProfile>();
   const [uploading, setUploading] = useState(false);
   if (state.session.role !== "admin")
@@ -67,7 +76,7 @@ export function AgentAdmin() {
     }
   }
   return (
-    <div className="page">
+    <div className={embedded ? "embedded-admin" : "page"}>
       <div className="page-head">
         <div>
           <span className="eyebrow">AGENT OPERATIONS</span>
@@ -155,6 +164,7 @@ export function AgentAdmin() {
                 id: crypto.randomUUID(),
                 name: "새 연결",
                 mode: "demo",
+                adapter: "chat-completions",
                 baseUrl: "",
                 chatPath: "/chat/completions",
                 modelsPath: "/models",
@@ -476,6 +486,22 @@ export function AgentAdmin() {
                 <option value="api">실제 API · 사내 모델 호출</option>
               </select>
             </label>
+            {profile.mode === "api" && <>
+              <label className="field">API 연결 방식
+                <select value={profile.adapter ?? "chat-completions"} onChange={e => setProfile(p => p ? ({ ...p, adapter: e.target.value as ConnectionProfile["adapter"], chatPath: e.target.value === "openwebui" && p.chatPath === "/chat/completions" ? "/api/chat/completions" : p.chatPath }) : p)}>
+                  <option value="chat-completions">일반 Chat Completions · 선택 텍스트 전달</option>
+                  <option value="openwebui">OpenWebUI · 선택 파일 업로드 후 첨부</option>
+                </select>
+              </label>
+              {profile.adapter === "openwebui" && <div className="form-grid">
+                <label className="field">파일 업로드 경로
+                  <input value={profile.filesPath ?? "/api/v1/files/"} onChange={e => pupdate("filesPath", e.target.value)} />
+                </label>
+                <label className="field">파일 처리 상태 경로
+                  <input value={profile.fileStatusPath ?? "/api/v1/files/{id}/process/status"} onChange={e => pupdate("fileStatusPath", e.target.value)} />
+                </label>
+              </div>}
+            </>}
             <label className="field">
               API 기본 URL
               <input
